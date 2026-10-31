@@ -14,6 +14,7 @@
     "node": ">=20"
   },
   "scripts": {
+    "prepare": "tsup",
     "build": "tsup",
     "dev:cli": "tsup --watch",
     "dev": "convex dev",

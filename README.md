@@ -35,12 +35,19 @@ Software engineering teams rarely standardize on a single AI coding tool. One en
 
 ## Installation & Quickstart
 
-### 1. Install Globally
+### 1. Install & Link Globally
 
+#### From Cloned Repository (Recommended):
 ```bash
-npm install -g operon-cli
-# or run with npx
-npx operon-cli --help
+cd operon-cli
+npm install
+npm link
+```
+*(Running `npm link` inside the repository connects the `operon` CLI globally on your system).*
+
+Alternatively, install directly from the local folder:
+```bash
+npm install -g .
 ```
 
 ### 2. One-Time Machine Setup
