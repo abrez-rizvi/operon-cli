@@ -1,0 +1,41 @@
+{
+  "name": "operon-cli",
+  "version": "0.1.0",
+  "description": "Agent-agnostic team control plane: shared playbooks, spatial knowledge, and deterministic quality gates for AI coding agents.",
+  "type": "module",
+  "bin": {
+    "operon": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "templates"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev:cli": "tsup --watch",
+    "dev": "convex dev",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@clack/prompts": "^1.8.1",
+    "cac": "^7.1.0",
+    "convex": "^1.49.0",
+    "minimatch": "^11.0.3",
+    "picocolors": "^1.1.1",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "convex-test": "^0.0.66",
+    "tsup": "^9.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

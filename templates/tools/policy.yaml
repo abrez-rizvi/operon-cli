@@ -1,0 +1,28 @@
+okf: "0.3"
+type: Policy
+# Fail `operon verify` when a touched file grows beyond this many lines.
+ceiling:
+  loc: 600
+# Package manifests / lockfiles that require human approval (`operon allow <file>`).
+manifests:
+  - package.json
+  - package-lock.json
+  - pnpm-lock.yaml
+  - yarn.lock
+  - bun.lockb
+  - Cargo.toml
+  - Cargo.lock
+  - requirements.txt
+  - pyproject.toml
+  - poetry.lock
+  - go.mod
+  - go.sum
+  - Gemfile
+  - Gemfile.lock
+  - composer.json
+debug:
+  # Globs where debug-looking output is legitimate (e.g. CLI entrypoints, scripts).
+  allow: []
+  # Extra regex markers flagged in any text file.
+  markers:
+    - '\[DEBUG-[^\]]*\]'
