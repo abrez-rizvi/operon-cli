@@ -9,7 +9,7 @@ declare const __OPERON_CONVEX_URL__: string | undefined;
 
 export { api };
 
-export const DEFAULT_CONVEX_URL = "https://amiable-tern-911.convex.cloud";
+export const DEFAULT_CONVEX_URL = "https://benevolent-vole-734.convex.cloud";
 
 function tryReadEnvFile(filePath: string): string | null {
   try {
@@ -33,7 +33,6 @@ function tryReadEnvFile(filePath: string): string | null {
 export function resolveConvexUrl(project?: Project | null): string | null {
   const envUrl = process.env.OPERON_CONVEX_URL?.trim() || process.env.CONVEX_URL?.trim();
   if (envUrl) return envUrl;
-  if (project?.config.cloud?.url) return project.config.cloud.url;
 
   const searchDirs = [project?.root, process.cwd()].filter(Boolean) as string[];
   for (const dir of searchDirs) {
@@ -43,11 +42,13 @@ export function resolveConvexUrl(project?: Project | null): string | null {
     if (fromEnv) return fromEnv;
   }
 
+  if (project?.config.cloud?.url) return project.config.cloud.url;
+
   const baked = typeof __OPERON_CONVEX_URL__ !== "undefined" ? __OPERON_CONVEX_URL__?.trim() : "";
   return baked || DEFAULT_CONVEX_URL;
 }
 
-export function createClient(url: string, timeoutMs = 800): ConvexHttpClient {
+export function createClient(url: string, timeoutMs = 15000): ConvexHttpClient {
   return new ConvexHttpClient(url, {
     fetch: (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) }),
   });
@@ -72,7 +73,7 @@ function resolveMutationRef(fn: string) {
 }
 
 /** Flushes queued offline mutations in FIFO order; keeps remaining entries on failure. */
-export async function flushOutbox(dir: string, url: string, timeoutMs = 800): Promise<number> {
+export async function flushOutbox(dir: string, url: string, timeoutMs = 15000): Promise<number> {
   const file = outboxPath(dir);
   if (!fs.existsSync(file)) return 0;
   const lines = fs.readFileSync(file, "utf8").split("\n").filter(Boolean);
@@ -100,7 +101,7 @@ export async function mutateWithOutbox(
   project: Project,
   fn: string,
   args: Record<string, unknown>,
-  timeoutMs = 800,
+  timeoutMs = 15000,
 ): Promise<boolean> {
   const url = resolveConvexUrl(project);
   if (!url || !project.config.cloud) return false;

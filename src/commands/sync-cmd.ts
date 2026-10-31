@@ -10,7 +10,7 @@ export async function syncCommand(opts: { pull?: boolean }): Promise<number> {
     throw new OperonError("No Convex deployment URL configured. Set `OPERON_CONVEX_URL` or run `operon share`.");
   }
   if (opts.pull) {
-    const res = await pullLatest(project, 4000);
+    const res = await pullLatest(project, 20000);
     if (res === "offline") throw new OperonError("Could not reach Convex deployment.");
     console.log(`${pc.green("✔")} Pulled latest snapshot & invariants from Convex.`);
     return 0;

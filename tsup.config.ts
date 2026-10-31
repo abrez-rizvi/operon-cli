@@ -9,6 +9,6 @@ export default defineConfig({
   banner: { js: "#!/usr/bin/env node" },
   define: {
     // Baked-in default Convex deployment; override at runtime with OPERON_CONVEX_URL.
-    __OPERON_CONVEX_URL__: JSON.stringify(process.env.OPERON_CONVEX_URL ?? "https://amiable-tern-911.convex.cloud"),
+    __OPERON_CONVEX_URL__: JSON.stringify(process.env.OPERON_CONVEX_URL ?? "https://benevolent-vole-734.convex.cloud"),
   },
 });

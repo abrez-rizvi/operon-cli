@@ -12,8 +12,8 @@ import {
 } from "./local-store.js";
 import { timeAgo } from "./matching.js";
 
-/** Pulls the latest files and invariants from Convex (800ms timeout; falls back to local cache). */
-export async function pullLatest(project: Project, timeoutMs = 800): Promise<"local" | "pulled" | "offline"> {
+/** Pulls the latest files and invariants from Convex (falls back to local cache on error/offline). */
+export async function pullLatest(project: Project, timeoutMs = 6000): Promise<"local" | "pulled" | "offline"> {
   const url = resolveConvexUrl(project);
   const cloud = project.config.cloud;
   if (!url || !cloud) return "local";
@@ -41,7 +41,7 @@ export async function remoteSessionNote(project: Project, branch: string, me: st
   const cloud = project.config.cloud;
   if (!url || !cloud) return null;
   try {
-    const client = createClient(url, 600);
+    const client = createClient(url, 6000);
     const latest = await client.query(api.sessions.getLatest, {
       projectId: cloud.projectId as Id<"projects">,
       branch,
@@ -83,12 +83,13 @@ export async function logTelemetry(
 }
 
 /** Binds a local project to Convex and uploads all project files & invariants. */
-export async function bindAndSyncProject(project: Project, url: string, timeoutMs = 8000) {
+export async function bindAndSyncProject(project: Project, url: string, timeoutMs = 20000) {
   const client = createClient(url, timeoutMs);
+  const token = project.config.cloud?.url === url ? project.config.cloud.projectToken : undefined;
   const bound = await client.mutation(api.projects.createOrGet, {
     name: project.config.name,
     repoHash: project.key,
-    projectToken: project.config.cloud?.projectToken,
+    projectToken: token,
   });
   project.config.cloud = {
     url,

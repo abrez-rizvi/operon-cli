@@ -33,7 +33,7 @@ export async function joinCommand(codeOrUrl: string): Promise<number> {
     );
   }
   const inviteCode = parseInviteInput(codeOrUrl);
-  const client = createClient(url, 4000);
+  const client = createClient(url, 20000);
   const snap = await client.query(api.projects.getSnapshot, { inviteCode });
   if (!snap) throw new OperonError(`No Convex workspace found for invite code "${inviteCode}".`);
 
