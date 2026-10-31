@@ -49,10 +49,10 @@ export const START = "<!-- operon:start -->";
 export const END = "<!-- operon:end -->";
 
 export const TRAMPOLINE_BLOCK = `${START}
-## Operon Protocol
-When 'operon' is mentioned, execute:
-\`operon boot "<prompt>"\`
-Follow the returned workflow sequence. Run \`operon verify\` before completion.
+## Operon
+1. At task start, run \`operon boot "<task>"\` and read \`.operon/BOOT.md\`.
+2. Every 2-3 turns (and when you find a project gotcha), append an OKF block to \`.operon/MEMORY.md\`.
+3. Before finishing, run \`operon verify\` (must exit 0).
 ${END}`;
 
 const CURSOR_FILE = `---
@@ -106,6 +106,6 @@ export function armLocalHarnesses(repoRoot: string): ArmResult[] {
     excludes.push(`/${t.configPath}`);
     results.push(armFile(t, file));
   }
-  if (excludes.length) addLocalExcludes(repoRoot, excludes);
+  addLocalExcludes(repoRoot, ["/.operon/", ".operon/", ...excludes]);
   return results;
 }

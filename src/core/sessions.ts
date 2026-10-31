@@ -9,6 +9,7 @@ export interface WalEntry {
   sessionId: string;
   author: string;
   message?: string;
+  task?: string;
   baseSha?: string | null;
 }
 
@@ -18,6 +19,7 @@ export interface Session {
   status: "in-flight" | "closed";
   startedAt: number;
   updatedAt: number;
+  task?: string;
   checkpoints: { ts: number; message: string }[];
 }
 
@@ -56,12 +58,14 @@ export function latestSession(dir: string, branch: string): Session | null {
   const start = entries[startIdx];
   const rest = entries.slice(startIdx).filter((e) => e.sessionId === start.sessionId);
   const last = rest[rest.length - 1];
+  const lastTask = [...rest].reverse().find((e) => e.task)?.task;
   return {
     sessionId: start.sessionId,
     baseSha: start.baseSha ?? null,
     status: rest.some((e) => e.kind === "close") ? "closed" : "in-flight",
     startedAt: start.ts,
     updatedAt: last.ts,
+    ...(lastTask ? { task: lastTask } : {}),
     checkpoints: rest.filter((e) => e.kind === "checkpoint").map((e) => ({ ts: e.ts, message: e.message ?? "" })),
   };
 }
@@ -72,16 +76,22 @@ export function activeSession(dir: string, branch: string): Session | null {
   return s && s.status === "in-flight" && Date.now() - s.updatedAt < STALE_MS ? s : null;
 }
 
-export function startSession(dir: string, branch: string, author: string, baseSha: string | null): Session {
+export function startSession(dir: string, branch: string, author: string, baseSha: string | null, task?: string): Session {
   const sessionId = crypto.randomBytes(4).toString("hex");
   const ts = Date.now();
-  append(dir, branch, { ts, kind: "start", sessionId, author, baseSha });
-  return { sessionId, baseSha, status: "in-flight", startedAt: ts, updatedAt: ts, checkpoints: [] };
+  append(dir, branch, { ts, kind: "start", sessionId, author, baseSha, ...(task ? { task } : {}) });
+  return { sessionId, baseSha, status: "in-flight", startedAt: ts, updatedAt: ts, ...(task ? { task } : {}), checkpoints: [] };
 }
 
-export function ensureSession(dir: string, branch: string, author: string, baseSha: string | null) {
+export function ensureSession(dir: string, branch: string, author: string, baseSha: string | null, task?: string) {
   const active = activeSession(dir, branch);
-  return active ? { session: active, resumed: true } : { session: startSession(dir, branch, author, baseSha), resumed: false };
+  if (active) {
+    if (task && active.task !== task) {
+      active.task = task;
+    }
+    return { session: active, resumed: true };
+  }
+  return { session: startSession(dir, branch, author, baseSha, task), resumed: false };
 }
 
 export function appendCheckpoint(dir: string, branch: string, author: string, sessionId: string, message: string): void {

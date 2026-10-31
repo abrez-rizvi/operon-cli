@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { listEntities } from "./entities.js";
-import { copyDir, walk } from "./local-store.js";
+import { copyDir, ensureMemoryFile, POLICY_FILE, walk } from "./local-store.js";
 import { packsDir, templatesDir, toPosix } from "./paths.js";
 
 export const DEFAULT_PACK = "default";
@@ -62,13 +62,31 @@ export function listPackItems(packName: string): PackItem[] {
     });
 }
 
-/** Copies the bundled policy + empty invariant ledger into a project profile (never overwrites). */
+/** Lists all available skills & workflows across all installed packs. */
+export function getAllPackItems(): PackItem[] {
+  ensureDefaultPack();
+  const packs = listPacks();
+  const all: PackItem[] = [];
+  const seen = new Set<string>();
+  for (const pack of packs) {
+    for (const item of listPackItems(pack)) {
+      const key = `${item.pack}:${item.relCopyPath}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        all.push(item);
+      }
+    }
+  }
+  return all;
+}
+
+/** Copies the bundled policy + default MEMORY.md into `.operon/` (never overwrites). */
 export function seedProjectBasics(projectDir: string): void {
-  for (const rel of ["knowledge/invariants.yaml", "tools/policy.yaml"]) {
-    const dest = path.join(projectDir, rel);
-    if (fs.existsSync(dest)) continue;
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.copyFileSync(path.join(templatesDir(), rel), dest);
+  ensureMemoryFile(projectDir);
+  const policyDest = path.join(projectDir, POLICY_FILE);
+  if (!fs.existsSync(policyDest)) {
+    fs.mkdirSync(path.dirname(policyDest), { recursive: true });
+    fs.copyFileSync(path.join(templatesDir(), "tools/policy.yaml"), policyDest);
   }
 }
 

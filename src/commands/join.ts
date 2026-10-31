@@ -1,10 +1,11 @@
 import pc from "picocolors";
 import { api, createClient, resolveConvexUrl } from "../core/convex-client.js";
-import { armLocalHarnesses } from "../core/harness-scanner.js";
 import { remoteUrl } from "../core/git.js";
+import { armLocalHarnesses } from "../core/harness-scanner.js";
 import {
   INVARIANTS_FILE,
   loadProject,
+  MEMORY_FILE,
   OperonError,
   projectDirFor,
   projectKey,
@@ -14,7 +15,6 @@ import {
   writeProjectFile,
 } from "../core/local-store.js";
 import { seedProjectBasics } from "../core/packs.js";
-import { printArmResults } from "../core/ui.js";
 
 /** Accepts a bare code (`acme-core-9x72ab3k4m`) or a magic URL (`https://.../join/<code>`). */
 export function parseInviteInput(codeOrUrl: string): string {
@@ -39,17 +39,21 @@ export async function joinCommand(codeOrUrl: string): Promise<number> {
 
   const redeemed = await client.mutation(api.projects.redeemInvite, { inviteCode });
   const key = projectKey(root);
-  const dir = projectDirFor(key);
+  const dir = projectDirFor(root);
 
   console.log(`${pc.green("✔")} Connecting to Convex workspace [${pc.bold(snap.name)}]…`);
-  console.log(`${pc.green("✔")} Hydrating skills, knowledge, workflows, and deterministic tools to disk…`);
+  console.log(`${pc.green("✔")} Hydrating skills, knowledge, workflows, and deterministic tools to ${pc.dim(".operon/")}…`);
 
   seedProjectBasics(dir);
   const byCategory: Record<string, Set<string>> = { skill: new Set(), knowledge: new Set(), workflow: new Set(), tool: new Set() };
   for (const f of snap.files) {
     if (f.path === INVARIANTS_FILE) continue;
     writeProjectFile(dir, f.path, f.content);
-    const item = f.path.split("/")[1]?.replace(/\.[^.]+$/, "") ?? f.path;
+    if (f.path === MEMORY_FILE) {
+      byCategory.knowledge.add("MEMORY.md");
+      continue;
+    }
+    const item = (f.path.includes("/") ? f.path.split("/")[1] : f.path)?.replace(/\.[^.]+$/, "") ?? f.path;
     byCategory[f.category]?.add(item);
   }
   writeInvariants(dir, snap.invariants);
@@ -85,6 +89,6 @@ export async function joinCommand(codeOrUrl: string): Promise<number> {
   if (armed.length) {
     console.log(`${pc.green("✔")} Auto-arming detected AI editors: ${armed.map((a) => a.name).join(", ")}.`);
   }
-  console.log(`${pc.green("✔")} Ready! Just prompt your agent with "operon <task>" to begin.`);
+  console.log(`${pc.green("✔")} Ready! Files are in ${pc.bold(".operon/")} — run ${pc.cyan("operon watch")} for live sync or prompt your agent with "operon <task>".`);
   return 0;
 }

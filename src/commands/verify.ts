@@ -1,6 +1,7 @@
 import pc from "picocolors";
-import { readPolicy, requireProject } from "../core/local-store.js";
-import { logTelemetry } from "../core/sync.js";
+import { readMemoryContent, readPolicy, requireProject } from "../core/local-store.js";
+import { parseMemoryFile } from "../core/memory-parser.js";
+import { logTelemetry, pushMemoryFile } from "../core/sync.js";
 import { scanDebug, type DebugFinding } from "../tools/debug-sanitizer.js";
 import { resolveBase, runDiffGuard } from "../tools/diff-guard.js";
 
@@ -14,6 +15,7 @@ export async function verifyCommand(): Promise<number> {
   const base = resolveBase(project);
   const report = runDiffGuard(project, base);
   const debug = scanDebug(project.root, base, readPolicy(project.dir));
+  const memParsed = parseMemoryFile(readMemoryContent(project.dir));
   const { files, added, deleted, net } = report.stats;
 
   console.log(`Operon verify · base ${base.slice(0, 7)} · ${files} file(s) · +${added} / -${deleted} (net ${net >= 0 ? "+" : ""}${net})`);
@@ -35,7 +37,15 @@ export async function verifyCommand(): Promise<number> {
     console.log("    → run `operon clean --purge`, then remove any remaining lines manually");
   }
 
-  const failed = report.violations.length > 0 || debug.length > 0;
+  line(!memParsed.errors.length, `OKF memory tags (.operon/MEMORY.md · ${memParsed.invariants.length} invariant(s), ${memParsed.checkpoints.length} checkpoint(s))`);
+  for (const err of memParsed.errors) {
+    console.log(`    .operon/MEMORY.md:${err.line}: ${err.message}`);
+  }
+
+  const failed = report.violations.length > 0 || debug.length > 0 || memParsed.errors.length > 0;
+  if (!failed && project.config.cloud) {
+    await pushMemoryFile(project);
+  }
   console.log(failed ? pc.red("RESULT: FAIL (exit 1) — fix the violations above and re-run `operon verify`") : pc.green("RESULT: PASS"));
   const code = failed ? 1 : 0;
   await logTelemetry(project, { command: "verify", exitCode: code, locDelta: net });

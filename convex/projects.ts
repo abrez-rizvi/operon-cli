@@ -1,6 +1,9 @@
+import type { GenericMutationCtx } from "convex/server";
 import { v } from "convex/values";
+import type { DataModel, Id } from "./_generated/dataModel.js";
 import { mutation, query } from "./_generated/server.js";
 import { randomToken, requireProjectToken, sha256Hex, slugifyProject } from "./auth.js";
+import { parseOkfMemory } from "./memory.js";
 
 const categoryValidator = v.union(
   v.literal("skill"),
@@ -8,6 +11,63 @@ const categoryValidator = v.union(
   v.literal("workflow"),
   v.literal("tool"),
 );
+
+async function ingestOkfMemory(
+  ctx: GenericMutationCtx<DataModel>,
+  projectId: Id<"projects">,
+  content: string,
+): Promise<{ invariants: number; checkpoints: number }> {
+  const parsed = parseOkfMemory(content);
+
+  for (const inv of parsed.invariants) {
+    const existing = await ctx.db
+      .query("invariants")
+      .withIndex("by_project_and_code", (q) => q.eq("projectId", projectId).eq("code", inv.code))
+      .first();
+    if (existing) {
+      await ctx.db.patch(existing._id, inv);
+    } else {
+      await ctx.db.insert("invariants", { projectId, ...inv });
+    }
+  }
+
+  for (const cp of parsed.checkpoints) {
+    const existing = await ctx.db
+      .query("sessions")
+      .withIndex("by_project_and_session", (q) => q.eq("projectId", projectId).eq("sessionId", cp.sessionId))
+      .first();
+    const entry = { timestamp: cp.timestamp, message: cp.message };
+    if (existing) {
+      const hasEntry = existing.checkpoints.some((c) => c.timestamp === cp.timestamp && c.message === cp.message);
+      const checkpoints = (hasEntry ? existing.checkpoints : [...existing.checkpoints, entry]).slice(-50);
+      await ctx.db.patch(existing._id, {
+        author: cp.author,
+        branch: cp.branch,
+        status: cp.status,
+        lastCheckpoint: cp.message,
+        ...(cp.task ? { task: cp.task } : {}),
+        ...(cp.touchedPaths ? { touchedPaths: cp.touchedPaths } : {}),
+        checkpoints,
+        updatedAt: Math.max(existing.updatedAt, cp.timestamp),
+      });
+    } else {
+      await ctx.db.insert("sessions", {
+        projectId,
+        sessionId: cp.sessionId,
+        branch: cp.branch,
+        author: cp.author,
+        status: cp.status,
+        lastCheckpoint: cp.message,
+        ...(cp.task ? { task: cp.task } : {}),
+        ...(cp.touchedPaths ? { touchedPaths: cp.touchedPaths } : {}),
+        checkpoints: [entry],
+        updatedAt: cp.timestamp,
+      });
+    }
+  }
+
+  return { invariants: parsed.invariants.length, checkpoints: parsed.checkpoints.length };
+}
 
 /** Creates a new Convex project (or returns existing when caller holds a valid projectToken). */
 export const createOrGet = mutation({
@@ -63,6 +123,11 @@ export const getSnapshot = query({
       .query("invariants")
       .withIndex("by_project", (q) => q.eq("projectId", project._id))
       .collect();
+    const sessions = await ctx.db
+      .query("sessions")
+      .withIndex("by_project", (q) => q.eq("projectId", project._id))
+      .collect();
+    sessions.sort((a, b) => b.updatedAt - a.updatedAt);
     return {
       projectId: project._id,
       name: project.name,
@@ -77,6 +142,16 @@ export const getSnapshot = query({
         paths: i.paths,
         author: i.author,
         timestamp: i.timestamp,
+      })),
+      sessions: sessions.slice(0, 20).map((s) => ({
+        sessionId: s.sessionId,
+        branch: s.branch,
+        author: s.author,
+        status: s.status,
+        lastCheckpoint: s.lastCheckpoint,
+        task: s.task ?? "",
+        touchedPaths: s.touchedPaths ?? [],
+        updatedAt: s.updatedAt,
       })),
     };
   },
@@ -96,7 +171,7 @@ export const redeemInvite = mutation({
   },
 });
 
-/** Upserts a single file in the cloud hydration snapshot. */
+/** Upserts a single file in the cloud hydration snapshot (and parses OKF tags if MEMORY.md). */
 export const syncFile = mutation({
   args: {
     projectId: v.id("projects"),
@@ -107,6 +182,9 @@ export const syncFile = mutation({
   },
   handler: async (ctx, args) => {
     await requireProjectToken(ctx, args.projectId, args.projectToken);
+    if (args.path === "MEMORY.md" || args.path.endsWith("/MEMORY.md")) {
+      await ingestOkfMemory(ctx, args.projectId, args.content);
+    }
     const existing = await ctx.db
       .query("files")
       .withIndex("by_project_and_path", (q) => q.eq("projectId", args.projectId).eq("path", args.path))
@@ -143,6 +221,9 @@ export const syncFiles = mutation({
     await requireProjectToken(ctx, args.projectId, args.projectToken);
     const updatedAt = Date.now();
     for (const file of args.files) {
+      if (file.path === "MEMORY.md" || file.path.endsWith("/MEMORY.md")) {
+        await ingestOkfMemory(ctx, args.projectId, file.content);
+      }
       const existing = await ctx.db
         .query("files")
         .withIndex("by_project_and_path", (q) => q.eq("projectId", args.projectId).eq("path", file.path))

@@ -4,6 +4,7 @@ import YAML from "yaml";
 import type { ZodType } from "zod";
 import { keyLine, parseFrontmatter } from "../core/frontmatter.js";
 import { walk } from "../core/local-store.js";
+import { parseMemoryFile } from "../core/memory-parser.js";
 import { BaseFrontmatter, InvariantLedger, KnowledgeFrontmatter, Policy, SkillFrontmatter, WorkflowFrontmatter } from "../types/okf.js";
 
 export interface Issue {
@@ -12,7 +13,7 @@ export interface Issue {
   message: string;
 }
 
-const RESERVED = new Set(["readme.md", "index.md"]);
+const RESERVED = new Set(["readme.md", "index.md", "boot.md"]);
 
 /** Picks the OKF schema for a markdown file based on its name and location. */
 function schemaFor(rel: string, isSupportingDoc: boolean): ZodType | null {
@@ -71,6 +72,13 @@ export function validateOkf(root: string): { issues: Issue[]; checked: number } 
     const abs = path.join(root, rel);
     const base = path.posix.basename(rel);
     if (/\.mdc?$/.test(rel)) {
+      if (base.toLowerCase() === "memory.md") {
+        checked++;
+        for (const err of parseMemoryFile(fs.readFileSync(abs, "utf8")).errors) {
+          issues.push({ file: rel, line: err.line, message: err.message });
+        }
+        continue;
+      }
       const dirFiles = fs.readdirSync(path.dirname(abs));
       const supporting = base !== "SKILL.md" && base !== "WORKFLOW.md" && (dirFiles.includes("SKILL.md") || dirFiles.includes("WORKFLOW.md"));
       const schema = schemaFor(rel, supporting);

@@ -10,6 +10,7 @@
 
 import type * as auth from "../auth.js";
 import type * as knowledge from "../knowledge.js";
+import type * as memory from "../memory.js";
 import type * as projects from "../projects.js";
 import type * as sessions from "../sessions.js";
 import type * as telemetry from "../telemetry.js";
@@ -23,6 +24,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   knowledge: typeof knowledge;
+  memory: typeof memory;
   projects: typeof projects;
   sessions: typeof sessions;
   telemetry: typeof telemetry;

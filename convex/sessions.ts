@@ -13,6 +13,8 @@ export const checkpoint = mutation({
     branch: v.string(),
     author: v.string(),
     message: v.string(),
+    task: v.optional(v.string()),
+    touchedPaths: v.optional(v.array(v.string())),
     close: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
@@ -29,6 +31,8 @@ export const checkpoint = mutation({
       await ctx.db.patch(existing._id, {
         status,
         lastCheckpoint: args.message,
+        ...(args.task !== undefined ? { task: args.task } : {}),
+        ...(args.touchedPaths !== undefined ? { touchedPaths: args.touchedPaths } : {}),
         checkpoints,
         updatedAt: now,
       });
@@ -41,7 +45,53 @@ export const checkpoint = mutation({
       author: args.author,
       status,
       lastCheckpoint: args.message,
+      task: args.task,
+      touchedPaths: args.touchedPaths,
       checkpoints: [entry],
+      updatedAt: now,
+    });
+  },
+});
+
+/** Declares or updates an in-flight working seam (task + touched file paths) for real-time collision detection. */
+export const declareSeam = mutation({
+  args: {
+    projectId: v.id("projects"),
+    projectToken: v.string(),
+    sessionId: v.string(),
+    branch: v.string(),
+    author: v.string(),
+    task: v.optional(v.string()),
+    touchedPaths: v.array(v.string()),
+  },
+  handler: async (ctx, args) => {
+    await requireProjectToken(ctx, args.projectId, args.projectToken);
+    const now = Date.now();
+    const existing = await ctx.db
+      .query("sessions")
+      .withIndex("by_project_and_session", (q) => q.eq("projectId", args.projectId).eq("sessionId", args.sessionId))
+      .first();
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        branch: args.branch,
+        author: args.author,
+        status: "in-flight",
+        ...(args.task !== undefined ? { task: args.task } : {}),
+        touchedPaths: args.touchedPaths,
+        updatedAt: now,
+      });
+      return existing._id;
+    }
+    return await ctx.db.insert("sessions", {
+      projectId: args.projectId,
+      sessionId: args.sessionId,
+      branch: args.branch,
+      author: args.author,
+      status: "in-flight",
+      lastCheckpoint: args.task ? `Task: ${args.task}` : "Working in-flight",
+      task: args.task,
+      touchedPaths: args.touchedPaths,
+      checkpoints: [],
       updatedAt: now,
     });
   },

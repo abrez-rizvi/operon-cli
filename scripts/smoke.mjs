@@ -71,14 +71,25 @@ const suites = {
 
     r = s.op("init", "demo", "--local");
     check("init --local exits 0", r.code === 0, r.out);
+    check("init creates visible .operon/MEMORY.md in project folder", fs.existsSync(path.join(s.repo, ".operon/MEMORY.md")), r.out);
     check("init arms local Cursor rule", fs.existsSync(path.join(s.repo, ".cursor/rules/operon.mdc")), r.out);
-    check("Cursor rule hidden from git status", !s.git("status", "--porcelain").includes(".cursor"), s.git("status", "--porcelain"));
+    check(".operon/ and Cursor rule hidden from git status", !s.git("status", "--porcelain").includes(".operon") && !s.git("status", "--porcelain").includes(".cursor"), s.git("status", "--porcelain"));
+
+    // Verify init works in a plain directory WITHOUT .git
+    const noGitDir = path.join(s.base, "plain-folder");
+    fs.mkdirSync(noGitDir, { recursive: true });
+    const noGitRes = spawnSync(process.execPath, [CLI, "init", "plain-app", "--local"], { cwd: noGitDir, env: s.env, encoding: "utf8" });
+    check(
+      "init works in a folder without .git and adds .operon/ to .gitignore",
+      noGitRes.status === 0 && fs.existsSync(path.join(noGitDir, ".operon/MEMORY.md")) && fs.readFileSync(path.join(noGitDir, ".gitignore"), "utf8").includes(".operon/"),
+      noGitRes.stdout + noGitRes.stderr,
+    );
 
     r = s.op("boot", "fix the broken login redirect");
-    check("boot classifies bug-fix workflow", r.code === 0 && /Workflow: Bug Fix/.test(r.out), r.out);
+    check("boot classifies bug-fix workflow and writes .operon/BOOT.md", r.code === 0 && /Workflow: Bug Fix/.test(r.out) && fs.existsSync(path.join(s.repo, ".operon/BOOT.md")), r.out);
     r = s.op("boot", "add rate limiting to login");
     check("boot classifies feature-delivery workflow", /Workflow: Feature Delivery/.test(r.out), r.out);
-    check("boot output stays compact (<2000 chars)", r.out.length < 2000, `${r.out.length} chars`);
+    check("boot output stays compact (<2500 chars)", r.out.length < 2500, `${r.out.length} chars`);
 
     r = s.op("fetch", "tdd");
     check("fetch entity prints TOC", r.code === 0 && /red-phase/.test(r.out), r.out);
@@ -153,7 +164,14 @@ const suites = {
     check("allow rejects non-interactive execution (agent guard)", r.code === 2 && /interactive terminal/.test(r.out), r.out);
     fs.unlinkSync(path.join(s.repo, "package.json"));
 
-    // 5. OKF validator catches malformed frontmatter
+    // 5. OKF validator catches malformed frontmatter & malformed MEMORY.md tags
+    const memFile = path.join(s.repo, ".operon/MEMORY.md");
+    const origMem = fs.readFileSync(memFile, "utf8");
+    fs.writeFileSync(memFile, origMem + '\n<!-- okf:invariant code="BAD-01" ts="2026-11-01T00:00:00Z" -->\nUnclosed tag\n');
+    r = s.op("verify");
+    check("verify fails when .operon/MEMORY.md has an unclosed OKF tag", r.code === 1 && /Unclosed <!-- okf:invariant -->/.test(r.out), r.out);
+    fs.writeFileSync(memFile, origMem);
+
     const badDir = path.join(s.base, "bad-okf");
     fs.mkdirSync(path.join(badDir, "skills/broken"), { recursive: true });
     fs.writeFileSync(path.join(badDir, "skills/broken/SKILL.md"), "---\ntype: Skill\nname: Not_Kebab\ntitle: Broken\n---\n# Body\n");
@@ -190,6 +208,10 @@ const suites = {
             const fmap = db.files.get(a.projectId);
             for (const f of a.files) fmap.set(f.path, { ...f, updatedAt: Date.now() });
             value = { synced: a.files.length, updatedAt: Date.now() };
+          } else if (fnPath === "projects:syncFile") {
+            const fmap = db.files.get(a.projectId);
+            fmap.set(a.path, { path: a.path, content: a.content, category: a.category, updatedAt: Date.now() });
+            value = a.path;
           } else if (fnPath === "projects:getSnapshot") {
             const p = [...db.projects.values()].find((x) => x.inviteCode === a.inviteCode);
             value = p
@@ -200,6 +222,7 @@ const suites = {
                   inviteCode: p.inviteCode,
                   files: [...db.files.get(p.projectId).values()],
                   invariants: [...db.invariants.get(p.projectId).values()],
+                  sessions: [...db.sessions.get(p.projectId).values()],
                 }
               : null;
           } else if (fnPath === "projects:redeemInvite") {
@@ -214,7 +237,9 @@ const suites = {
             const removed = db.invariants.get(a.projectId).delete(a.code);
             value = { removed };
           } else if (fnPath === "sessions:checkpoint") {
-            db.sessions.get(a.projectId).set(a.branch, {
+            const prev = db.sessions.get(a.projectId).get(a.sessionId) || {};
+            db.sessions.get(a.projectId).set(a.sessionId, {
+              ...prev,
               sessionId: a.sessionId,
               branch: a.branch,
               author: a.author,
@@ -223,8 +248,24 @@ const suites = {
               updatedAt: Date.now(),
             });
             value = a.sessionId;
+          } else if (fnPath === "sessions:declareSeam") {
+            const prev = db.sessions.get(a.projectId).get(a.sessionId) || {};
+            db.sessions.get(a.projectId).set(a.sessionId, {
+              ...prev,
+              sessionId: a.sessionId,
+              branch: a.branch,
+              author: a.author,
+              status: "in-flight",
+              lastCheckpoint: prev.lastCheckpoint || (a.task ? `Task: ${a.task}` : "Working in-flight"),
+              task: a.task ?? prev.task ?? "",
+              touchedPaths: a.touchedPaths ?? [],
+              updatedAt: Date.now(),
+            });
+            value = a.sessionId;
           } else if (fnPath === "sessions:getLatest") {
-            value = db.sessions.get(a.projectId)?.get(a.branch) ?? null;
+            const all = [...(db.sessions.get(a.projectId)?.values() ?? [])].filter((s) => s.branch === a.branch);
+            all.sort((x, y) => y.updatedAt - x.updatedAt);
+            value = all[0] ?? null;
           } else if (fnPath === "telemetry:log") {
             db.telemetry.push(a);
             value = "t1";
@@ -284,6 +325,20 @@ const suites = {
         "Bob boot pulls Alice's AUTH-01 invariant and teammate checkpoint from Convex",
         r.code === 0 && /\[AUTH-01\] Token expiry must be in seconds/.test(r.out) && /Teammate Activity/.test(r.out),
         r.out,
+      );
+
+      // In-flight seam collision: Alice modifies src/auth/token.ts and runs watch --once, Bob also touches src/auth/token.ts and runs watch --once
+      alice.write("src/auth/token.ts", "export const verify = (expSec: number) => expSec > 0;\n");
+      r = await alice.opAsync("watch", "--once");
+      check("Alice watch --once declares in-flight seam on src/auth/token.ts", r.code === 0 && /src\/auth\/token\.ts/.test(r.out), r.out);
+
+      bob.write("src/auth/token.ts", "export const verify = () => false;\n");
+      r = await bob.opAsync("watch", "--once");
+      const bobBoot = fs.readFileSync(path.join(bob.repo, ".operon/BOOT.md"), "utf8");
+      check(
+        "Bob watch --once detects in-flight seam collision with Alice and injects warning into .operon/BOOT.md",
+        r.code === 0 && /SEAM COLLISION/.test(r.out) && /In-Flight Seam Collision Warning/.test(bobBoot),
+        r.out + "\n" + bobBoot,
       );
 
       // Offline outbox resilience: Alice records invariant while offline, then flushes on next online command

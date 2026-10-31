@@ -43,7 +43,7 @@ export default defineSchema({
     .index("by_project", ["projectId"])
     .index("by_project_and_code", ["projectId", "code"]),
 
-  // 4. Continuous Sessions (Write-Ahead Logging)
+  // 4. Continuous Sessions & In-Flight Seams (Write-Ahead Logging + Collision Detection)
   sessions: defineTable({
     projectId: v.id("projects"),
     sessionId: v.string(),
@@ -51,6 +51,8 @@ export default defineSchema({
     author: v.string(),
     status: v.union(v.literal("in-flight"), v.literal("paused"), v.literal("closed")),
     lastCheckpoint: v.string(),
+    task: v.optional(v.string()),
+    touchedPaths: v.optional(v.array(v.string())),
     checkpoints: v.array(
       v.object({
         timestamp: v.number(),
@@ -59,6 +61,7 @@ export default defineSchema({
     ),
     updatedAt: v.number(),
   })
+    .index("by_project", ["projectId"])
     .index("by_project_and_branch", ["projectId", "branch"])
     .index("by_project_and_session", ["projectId", "sessionId"]),
 

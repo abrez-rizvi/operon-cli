@@ -1,7 +1,9 @@
 import pc from "picocolors";
-import { author } from "../core/git.js";
 import { mutateWithOutbox } from "../core/convex-client.js";
-import { readInvariants, requireProject, writeInvariants } from "../core/local-store.js";
+import { author } from "../core/git.js";
+import { appendMemoryBlock, readInvariants, requireProject } from "../core/local-store.js";
+import { formatInvariantBlock } from "../core/memory-parser.js";
+import { pushMemoryFile } from "../core/sync.js";
 import type { Invariant } from "../types/okf.js";
 
 export interface RememberOptions {
@@ -11,7 +13,7 @@ export interface RememberOptions {
   code?: string;
 }
 
-/** Parses `[scope] rule text` into scope tag, default path glob, trigger regex, and next code. */
+/** Parses `[scope] rule text` (or plain English) into scope tag, default path glob, trigger regex, and next code. */
 export function buildInvariant(
   rawGotcha: string,
   existing: Invariant[],
@@ -67,11 +69,11 @@ export async function rememberCommand(gotcha: string, opts: RememberOptions): Pr
   const project = requireProject();
   const existing = readInvariants(project.dir);
   const inv = buildInvariant(gotcha, existing, author(project.root), opts);
-  const next = [...existing.filter((i) => i.code !== inv.code), inv];
-  writeInvariants(project.dir, next);
+  appendMemoryBlock(project.dir, formatInvariantBlock(inv));
 
   let synced = false;
   if (project.config.cloud) {
+    await pushMemoryFile(project);
     synced = await mutateWithOutbox(project, "knowledge:addInvariant", {
       projectId: project.config.cloud.projectId,
       projectToken: project.config.cloud.projectToken,
@@ -79,7 +81,7 @@ export async function rememberCommand(gotcha: string, opts: RememberOptions): Pr
     });
   }
 
-  const syncTag = project.config.cloud ? (synced ? "synced to Convex" : "queued in offline outbox") : "saved locally";
+  const syncTag = project.config.cloud ? (synced ? "synced to Convex" : "queued in offline outbox") : "saved in .operon/MEMORY.md";
   console.log(`${pc.green("✔")} Recorded invariant [${pc.bold(inv.code)}] (${inv.paths.join(", ")}) — ${syncTag}`);
   console.log(`  ${inv.rule}`);
   return 0;

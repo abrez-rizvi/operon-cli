@@ -1,9 +1,9 @@
 import path from "node:path";
-import { cancel, groupMultiselect, intro, isCancel, log, outro, text } from "@clack/prompts";
+import { cancel, isCancel, log, multiselect, select, spinner, text } from "@clack/prompts";
 import pc from "picocolors";
 import { resolveConvexUrl } from "../core/convex-client.js";
+import { remoteUrl } from "../core/git.js";
 import { armLocalHarnesses } from "../core/harness-scanner.js";
-import { remoteToHttps, remoteUrl } from "../core/git.js";
 import {
   loadProject,
   projectDirFor,
@@ -18,27 +18,140 @@ import {
   copyWholePack,
   DEFAULT_PACK,
   ensureDefaultPack,
-  listPackItems,
-  listPacks,
+  getAllPackItems,
   seedProjectBasics,
 } from "../core/packs.js";
 import { bindAndSyncProject } from "../core/sync.js";
 import { isInteractive, printArmResults } from "../core/ui.js";
 import { validateOkf } from "../tools/okf-validator.js";
-import { addCommand } from "./add.js";
+import { addCommand, parseGitSource } from "./add.js";
 
 export interface InitOptions {
   local?: boolean;
   yes?: boolean;
   pack?: string;
+  skillsRepo?: string;
 }
 
-const ACTION_IMPORT_GH = "__action:import-github";
-const ACTION_IMPORT_DIR = "__action:import-dir";
+export interface SkillEquipResult {
+  equippedCount: number;
+  cancelled: boolean;
+}
+
+export async function promptSkillEquip(
+  projectDir: string,
+  opts: { skillsRepo?: string } = {},
+): Promise<SkillEquipResult> {
+  ensureDefaultPack();
+
+  let importedPackName: string | null = null;
+
+  if (opts.skillsRepo) {
+    const s = spinner();
+    s.start(`Fetching skills from ${opts.skillsRepo}...`);
+    try {
+      await addCommand(opts.skillsRepo, { raw: true, force: true });
+      s.stop(pc.green(`✔ Imported skills from ${opts.skillsRepo}`));
+      const parsed = parseGitSource(opts.skillsRepo);
+      if (parsed) importedPackName = parsed.defaultName;
+    } catch (err) {
+      s.stop(pc.red(`Failed to fetch ${opts.skillsRepo}`));
+      log.error(err instanceof Error ? err.message : String(err));
+    }
+  } else {
+    const skillMethod = await select({
+      message: "Equip skills & playbooks for this project:",
+      options: [
+        { value: "existing", label: "Choose existing skills", hint: "multi-select from built-in & local skills" },
+        { value: "github", label: "Import from GitHub repo", hint: "optional repository URL for skill files" },
+        { value: "defaults", label: "Use default skills", hint: "fast start with all 4 default skills" },
+      ],
+    });
+
+    if (isCancel(skillMethod)) {
+      return { equippedCount: 0, cancelled: true };
+    }
+
+    if (skillMethod === "defaults") {
+      const count = copyWholePack(DEFAULT_PACK, projectDir);
+      return { equippedCount: count, cancelled: false };
+    }
+
+    if (skillMethod === "github") {
+      const repoUrl = await text({
+        message: "GitHub repository URL for skill files (or press Enter to choose existing):",
+        placeholder: "https://github.com/owner/repo or ./path/to/skills",
+      });
+
+      if (isCancel(repoUrl)) {
+        return { equippedCount: 0, cancelled: true };
+      }
+
+      const trimmed = repoUrl.trim();
+      if (trimmed) {
+        const s = spinner();
+        s.start(`Fetching skills from ${trimmed}...`);
+        try {
+          await addCommand(trimmed, { raw: true, force: true });
+          s.stop(pc.green(`✔ Imported skills from ${trimmed}`));
+          const parsed = parseGitSource(trimmed);
+          if (parsed) importedPackName = parsed.defaultName;
+        } catch (err) {
+          s.stop(pc.red(`Failed to fetch ${trimmed}`));
+          log.error(err instanceof Error ? err.message : String(err));
+        }
+      }
+    }
+  }
+
+  // Load all available pack items (including newly imported)
+  const allItems = getAllPackItems();
+  if (allItems.length === 0) {
+    const count = copyWholePack(DEFAULT_PACK, projectDir);
+    return { equippedCount: count, cancelled: false };
+  }
+
+  const options = allItems.map((item) => {
+    const packTag = item.pack !== DEFAULT_PACK ? `[${item.pack}] ` : "";
+    return {
+      value: `${item.pack}:${item.relCopyPath}`,
+      label: `${packTag}${item.title} ${pc.dim(`(${item.displayPath})`)}`,
+      hint: item.kind,
+    };
+  });
+
+  // Pre-select: default pack items + newly imported items
+  const initialValues = allItems
+    .filter((item) => item.pack === DEFAULT_PACK || (importedPackName && item.pack === importedPackName))
+    .map((item) => `${item.pack}:${item.relCopyPath}`);
+
+  const selected = await multiselect({
+    message: "Select skills & workflows to equip:",
+    options,
+    initialValues,
+    required: false,
+  });
+
+  if (isCancel(selected)) {
+    return { equippedCount: 0, cancelled: true };
+  }
+
+  let count = 0;
+  for (const entry of selected) {
+    const idx = entry.indexOf(":");
+    if (idx === -1) continue;
+    const pack = entry.slice(0, idx);
+    const relPath = entry.slice(idx + 1);
+    copyEntity(pack, relPath, projectDir);
+    count++;
+  }
+
+  return { equippedCount: count, cancelled: false };
+}
 
 export async function initCommand(nameArg: string | undefined, opts: InitOptions = {}): Promise<number> {
   const root = requireRepo();
-  const existing = loadProject();
+  const existing = loadProject(root);
   if (existing) {
     console.log(`Already initialized: ${pc.bold(existing.config.name)} ${pc.dim(existing.dir)}`);
     printArmResults(armLocalHarnesses(root));
@@ -47,114 +160,22 @@ export async function initCommand(nameArg: string | undefined, opts: InitOptions
 
   ensureDefaultPack();
   const key = projectKey(root);
-  const dir = projectDirFor(key);
-  const defaultName = nameArg ?? path.basename(root);
-  const detectedRemote = remoteUrl(root);
-  const interactive = isInteractive() && !opts.local && !opts.yes && !opts.pack;
+  const dir = projectDirFor(root);
+  const name = (nameArg ?? path.basename(root)).trim() || "project";
+  const remote = remoteUrl(root);
 
-  let name = defaultName;
-  let remote = detectedRemote;
   let equippedCount = 0;
+  const interactive = isInteractive() && !opts.yes && !opts.pack;
 
   if (interactive) {
-    intro(pc.bold("Operon Project Initialization"));
-    const nameInput = await text({
-      message: "Project name:",
-      placeholder: defaultName,
-      defaultValue: defaultName,
-    });
-    if (isCancel(nameInput)) {
+    const result = await promptSkillEquip(dir, { skillsRepo: opts.skillsRepo });
+    if (result.cancelled) {
       cancel("Initialization cancelled.");
       return 1;
     }
-    name = (nameInput || defaultName).trim();
-
-    if (detectedRemote) {
-      log.info(`Auto-detected repository: ${pc.cyan(remoteToHttps(detectedRemote))}`);
-    } else {
-      const repoInput = await text({
-        message: "GitHub repository URL (optional, press Enter to skip):",
-        placeholder: "https://github.com/acme/project",
-        defaultValue: "",
-      });
-      if (isCancel(repoInput)) {
-        cancel("Initialization cancelled.");
-        return 1;
-      }
-      if (repoInput.trim()) remote = repoInput.trim();
-    }
-
-    // Build pack-grouped multi-select options
-    const buildGroupedOptions = () => {
-      const groups: Record<string, { value: string; label: string; hint?: string }[]> = {};
-      const initialValues: string[] = [];
-      for (const pack of listPacks()) {
-        const items = listPackItems(pack);
-        if (!items.length) continue;
-        groups[`[${pack}]`] = items.map((item) => {
-          const val = `${pack}:${item.relCopyPath}`;
-          if (pack === DEFAULT_PACK) initialValues.push(val);
-          return {
-            value: val,
-            label: `${item.title} (${item.displayPath})`,
-            hint: item.kind,
-          };
-        });
-      }
-      groups["[Actions]"] = [
-        { value: ACTION_IMPORT_GH, label: "+ Import another GitHub repository..." },
-        { value: ACTION_IMPORT_DIR, label: "+ Import from local directory..." },
-      ];
-      return { groups, initialValues };
-    };
-
-    let { groups, initialValues } = buildGroupedOptions();
-    const firstChoice = await groupMultiselect({
-      message: "Select skills & playbooks to equip for this project:",
-      options: groups,
-      initialValues,
-      required: false,
-    });
-    if (isCancel(firstChoice)) {
-      cancel("Initialization cancelled.");
-      return 1;
-    }
-    let selected: string[] = firstChoice;
-
-    // Handle on-the-fly import actions
-    while (selected.includes(ACTION_IMPORT_GH) || selected.includes(ACTION_IMPORT_DIR)) {
-      const isGh = selected.includes(ACTION_IMPORT_GH);
-      const src = await text({
-        message: isGh ? "GitHub repository URL to import:" : "Local directory path to import:",
-        placeholder: isGh ? "https://github.com/anthropics/claude-code-skills" : "./my-rules",
-      });
-      if (!isCancel(src) && src.trim()) {
-        await addCommand(src.trim());
-      }
-      ({ groups, initialValues } = buildGroupedOptions());
-      const nextSelected = await groupMultiselect({
-        message: "Select skills & playbooks to equip for this project:",
-        options: groups,
-        initialValues: selected.filter((v) => !v.startsWith("__action:")),
-        required: false,
-      });
-      if (isCancel(nextSelected)) {
-        cancel("Initialization cancelled.");
-        return 1;
-      }
-      selected = nextSelected;
-    }
-
-    for (const entry of selected) {
-      if (entry.startsWith("__action:")) continue;
-      const idx = entry.indexOf(":");
-      const pack = entry.slice(0, idx);
-      const relPath = entry.slice(idx + 1);
-      copyEntity(pack, relPath, dir);
-      equippedCount++;
-    }
+    equippedCount = result.equippedCount;
   } else {
-    equippedCount += copyWholePack(DEFAULT_PACK, dir);
+    equippedCount = copyWholePack(DEFAULT_PACK, dir);
     if (opts.pack && opts.pack !== DEFAULT_PACK) {
       equippedCount += copyWholePack(opts.pack, dir);
     }
@@ -165,7 +186,6 @@ export async function initCommand(nameArg: string | undefined, opts: InitOptions
   saveConfig(dir, config);
   const project: Project = { root, key, dir, config };
 
-  // Bind to Convex automatically if URL is configured and --local was not passed
   const url = !opts.local ? resolveConvexUrl(project) : null;
   if (url) {
     try {
@@ -175,10 +195,7 @@ export async function initCommand(nameArg: string | undefined, opts: InitOptions
     }
   }
 
-  const msg = `${equippedCount} skill(s)/workflow(s) and core guardrails equipped to ${pc.bold(name)}!`;
-  if (interactive) outro(pc.green(`✔ ${msg}`));
-  else console.log(`${pc.green("✔")} Initialized ${pc.bold(name)} with ${equippedCount} skills/workflows ${pc.dim(dir)}`);
-
+  console.log(`${pc.green("✔")} Initialized ${pc.bold(name)} with ${equippedCount} skills/workflows ${pc.dim(dir)}`);
   printArmResults(armLocalHarnesses(root));
 
   const { issues } = validateOkf(dir);
