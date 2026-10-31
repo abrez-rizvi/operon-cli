@@ -9,13 +9,42 @@ declare const __OPERON_CONVEX_URL__: string | undefined;
 
 export { api };
 
-/** Resolves the Convex deployment URL from env, project config, or build-time default. */
+export const DEFAULT_CONVEX_URL = "https://amiable-tern-911.convex.cloud";
+
+function tryReadEnvFile(filePath: string): string | null {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const content = fs.readFileSync(filePath, "utf8");
+    for (const line of content.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("#") || !trimmed.includes("=")) continue;
+      const [key, ...rest] = trimmed.split("=");
+      const k = key.trim();
+      if (k === "OPERON_CONVEX_URL" || k === "CONVEX_URL") {
+        const val = rest.join("=").trim().replace(/^["']|["']$/g, "");
+        if (val) return val;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+/** Resolves the Convex deployment URL from env, .env files, project config, or default deployment. */
 export function resolveConvexUrl(project?: Project | null): string | null {
-  const envUrl = process.env.OPERON_CONVEX_URL?.trim();
+  const envUrl = process.env.OPERON_CONVEX_URL?.trim() || process.env.CONVEX_URL?.trim();
   if (envUrl) return envUrl;
   if (project?.config.cloud?.url) return project.config.cloud.url;
+
+  const searchDirs = [project?.root, process.cwd()].filter(Boolean) as string[];
+  for (const dir of searchDirs) {
+    const fromEnvLocal = tryReadEnvFile(path.join(dir, ".env.local"));
+    if (fromEnvLocal) return fromEnvLocal;
+    const fromEnv = tryReadEnvFile(path.join(dir, ".env"));
+    if (fromEnv) return fromEnv;
+  }
+
   const baked = typeof __OPERON_CONVEX_URL__ !== "undefined" ? __OPERON_CONVEX_URL__?.trim() : "";
-  return baked || null;
+  return baked || DEFAULT_CONVEX_URL;
 }
 
 export function createClient(url: string, timeoutMs = 800): ConvexHttpClient {

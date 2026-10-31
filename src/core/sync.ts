@@ -83,7 +83,7 @@ export async function logTelemetry(
 }
 
 /** Binds a local project to Convex and uploads all project files & invariants. */
-export async function bindAndSyncProject(project: Project, url: string, timeoutMs = 4000) {
+export async function bindAndSyncProject(project: Project, url: string, timeoutMs = 8000) {
   const client = createClient(url, timeoutMs);
   const bound = await client.mutation(api.projects.createOrGet, {
     name: project.config.name,

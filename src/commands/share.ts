@@ -1,10 +1,16 @@
 import pc from "picocolors";
 import { resolveConvexUrl } from "../core/convex-client.js";
-import { OperonError, requireProject } from "../core/local-store.js";
+import { loadProject, OperonError, requireProject } from "../core/local-store.js";
 import { bindAndSyncProject } from "../core/sync.js";
+import { initCommand } from "./init.js";
 
 export async function shareCommand(): Promise<number> {
-  const project = requireProject();
+  let project = loadProject();
+  if (!project) {
+    console.log(pc.cyan("→ Initializing project before sharing..."));
+    await initCommand(undefined, { yes: true });
+    project = requireProject();
+  }
   const url = resolveConvexUrl(project);
   if (!url) {
     throw new OperonError(
