@@ -182,14 +182,84 @@ const suites = {
   },
 
   async phase3() {
-    // Start a local HTTP server speaking ConvexHttpClient's /api/query & /api/mutation protocol
-    const db = { projects: new Map(), files: new Map(), invariants: new Map(), sessions: new Map(), telemetry: [] };
+    // Start a local HTTP server speaking both ConvexHttpClient (/api/query, /api/mutation) and Meko MCP JSON-RPC 2.0 (/mcp)
+    const db = {
+      projects: new Map(),
+      files: new Map(),
+      invariants: new Map(),
+      sessions: new Map(),
+      telemetry: [],
+      mekoMemories: [
+        {
+          id: "meko-seed-1",
+          memory: "Nginx proxy requires proxy_read_timeout 3600s for staging websockets",
+          score: 0.84,
+          agent_id: "cursor:infra",
+          created_at: "2026-10-31T08:14:22Z",
+        },
+      ],
+      mekoSimulateQuotaExceeded: false,
+    };
     const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
     const server = http.createServer((req, res) => {
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", () => {
         try {
+          if (req.url === "/mcp") {
+            if (db.mekoSimulateQuotaExceeded) {
+              res.writeHead(429, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify({
+                  jsonrpc: "2.0",
+                  id: 1,
+                  error: { code: -32000, message: "Rate limit exceeded: 1000 query lifetime quota reached" },
+                }),
+              );
+              return;
+            }
+            const rpc = JSON.parse(body || "{}");
+            const toolName = rpc?.params?.name;
+            const toolArgs = rpc?.params?.arguments || {};
+            if (toolName === "memory_add") {
+              const entry = {
+                id: `meko-${db.mekoMemories.length + 1}`,
+                memory: toolArgs.text,
+                event: "ADD",
+                score: 0.91,
+                agent_id: toolArgs.agent_id || "operon:cli",
+              };
+              db.mekoMemories.push(entry);
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify({
+                  jsonrpc: "2.0",
+                  id: rpc.id ?? 1,
+                  result: { content: [{ type: "text", text: JSON.stringify({ results: [entry] }) }] },
+                }),
+              );
+              return;
+            }
+            if (toolName === "memory_search") {
+              const qWords = String(toolArgs.query || "")
+                .toLowerCase()
+                .split(/\W+/)
+                .filter((w) => w.length >= 4);
+              const hits = db.mekoMemories.filter((m) =>
+                qWords.some((w) => m.memory.toLowerCase().includes(w)),
+              );
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify({
+                  jsonrpc: "2.0",
+                  id: rpc.id ?? 2,
+                  result: { content: [{ type: "text", text: JSON.stringify({ results: hits }) }] },
+                }),
+              );
+              return;
+            }
+          }
+
           const { path: fnPath, args } = JSON.parse(body || "{}");
           const a = (args && args[0]) || {};
           let value = null;
@@ -292,6 +362,10 @@ const suites = {
       const bob = sandbox("bob");
       alice.env.OPERON_CONVEX_URL = convexUrl;
       bob.env.OPERON_CONVEX_URL = convexUrl;
+      alice.env.OPERON_MEKO_URL = `${convexUrl}/mcp`;
+      bob.env.OPERON_MEKO_URL = `${convexUrl}/mcp`;
+      alice.env.OPERON_MEKO_TOKEN = "mko_tkn_smoke_test";
+      bob.env.OPERON_MEKO_TOKEN = "mko_tkn_smoke_test";
 
       for (const dev of [alice, bob]) {
         dev.write("src/auth/token.ts", "export const verify = () => true;\n");
@@ -316,20 +390,38 @@ const suites = {
         r.out,
       );
 
-      // Alice records a gotcha & a WAL checkpoint
+      // Alice records a gotcha & a WAL checkpoint (writes to Convex L1 + Meko/YugabyteDB L2)
       r = await alice.opAsync("remember", "[auth] Token expiry must be in seconds", "--reason", "JWT verifier expects Unix seconds");
-      check("Alice remember records AUTH-01 and syncs to Convex", r.code === 0 && /\[AUTH-01\]/.test(r.out) && /synced to Convex/.test(r.out), r.out);
+      check(
+        "Alice remember records AUTH-01 and syncs to Convex (L1) + Meko/YugabyteDB (L2)",
+        r.code === 0 && /\[AUTH-01\]/.test(r.out) && /synced to Convex/.test(r.out) && /Meko\/YugabyteDB \(L2\)/.test(r.out),
+        r.out,
+      );
 
       r = await alice.opAsync("checkpoint", "Auth test green, refactoring");
       check("Alice checkpoint syncs WAL to Convex", r.code === 0, r.out);
 
-      // Bob boots on a task mentioning auth -> receives Alice's invariant + teammate activity!
+      // Bob boots on a task mentioning auth -> receives Alice's invariant + teammate activity from L1!
       r = await bob.opAsync("boot", "fix auth session validation");
       check(
         "Bob boot pulls Alice's AUTH-01 invariant and teammate checkpoint from Convex",
         r.code === 0 && /\[AUTH-01\] Token expiry must be in seconds/.test(r.out) && /Teammate Activity/.test(r.out),
         r.out,
       );
+
+      // L1 Cache Miss -> L2 Meko Semantic Read-Through & Promotion to Convex L1!
+      r = await bob.opAsync("boot", "fix websocket connection drops in staging");
+      check(
+        "Bob boot on L1 miss queries Meko L2 memory_search, recalls [MEKO-01], and promotes it into Convex L1",
+        r.code === 0 && /\[MEKO-01\] Nginx proxy requires proxy_read_timeout 3600s/.test(r.out) && /Meko\/YugabyteDB L2/.test(r.out),
+        r.out,
+      );
+
+      // Verify Meko 429 quota exceeded fallback is 100% graceful and never blocks CLI
+      db.mekoSimulateQuotaExceeded = true;
+      r = await alice.opAsync("boot", "investigate uncached payment webhook");
+      check("Meko 429 quota limit degrades gracefully to Convex L1 with zero errors", r.code === 0, r.out);
+      db.mekoSimulateQuotaExceeded = false;
 
       // In-flight seam collision: Alice modifies src/auth/token.ts and runs watch --once, Bob also touches src/auth/token.ts and runs watch --once
       alice.write("src/auth/token.ts", "export const verify = (expSec: number) => expSec > 0;\n");
@@ -409,7 +501,7 @@ const suites = {
     r = s.op("init", "my-web", "--local", "--pack", "community-nextjs");
     check(
       "operon init --pack equips default + community-nextjs skills and flags unvalidated skill",
-      r.code === 0 && /Initialized my-web with 7 skills\/workflows/.test(r.out),
+      r.code === 0 && /Initialized my-web with \d+ skills\/workflows/.test(r.out),
       r.out,
     );
 

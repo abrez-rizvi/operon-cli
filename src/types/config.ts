@@ -8,6 +8,13 @@ export const CloudBinding = z.object({
 });
 export type CloudBinding = z.infer<typeof CloudBinding>;
 
+export const MekoBinding = z.object({
+  token: z.string(),
+  url: z.string().optional(),
+  datapackId: z.string().optional(),
+});
+export type MekoBinding = z.infer<typeof MekoBinding>;
+
 export const ProjectConfig = z.object({
   version: z.literal(1).default(1),
   name: z.string(),
@@ -16,6 +23,7 @@ export const ProjectConfig = z.object({
   remote: z.string().nullable().default(null),
   createdAt: z.number(),
   cloud: CloudBinding.optional(),
+  meko: MekoBinding.optional(),
   lastPullAt: z.number().optional(),
 });
 export type ProjectConfig = z.infer<typeof ProjectConfig>;

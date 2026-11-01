@@ -69,6 +69,7 @@ export async function addCommand(source: string, opts: AddOptions = {}): Promise
         throw new OperonError(`Source directory not found: ${source}`);
       }
       defaultPackName = toSlug(path.basename(stageRoot));
+      if (defaultPackName === "operon") defaultPackName = "default";
     }
 
     // Stage into a temporary pack first to count discovered items

@@ -1,4 +1,5 @@
 import pc from "picocolors";
+import { mutateWithOutbox } from "../core/convex-client.js";
 import { listEntities } from "../core/entities.js";
 import { author, changedFiles, currentBranch, EMPTY_TREE, headSha } from "../core/git.js";
 import {
@@ -7,6 +8,7 @@ import {
   loadProject,
   readInvariants,
   readMemoryCheckpoints,
+  writeInvariants,
   writeProjectFile,
   type Project,
 } from "../core/local-store.js";
@@ -18,6 +20,7 @@ import {
   matchInvariants,
   timeAgo,
 } from "../core/matching.js";
+import { recallInvariantsFromMeko } from "../core/meko-client.js";
 import { activeSession, ensureSession } from "../core/sessions.js";
 import { pullLatest, pushSeam, readRemoteSessions, remoteSessionNote } from "../core/sync.js";
 import { parseHeadings } from "../tools/heading-parser.js";
@@ -148,12 +151,17 @@ export function refreshBootFile(project: Project, promptOverride?: string, opts:
   }
 
   if (rankedEntities.length > 0) {
+    const matched = rankedEntities.filter((r) => r.matched);
+    const toShow = (matched.length > 0 ? matched : rankedEntities).slice(0, 4);
     md.push("", "## Knowledge & Skills (`operon fetch <name>:<section>`)");
-    for (const { entity: e, matched: isHit, reasons } of rankedEntities) {
+    for (const { entity: e, matched: isHit, reasons } of toShow) {
       const badge = isHit ? `[${e.kind} ★ ${reasons.join(", ")}]` : `[${e.kind}]`;
-      const slugs = e.sections.slice(0, 5).map((s) => s.slug);
+      const slugs = e.sections.slice(0, 4).map((s) => s.slug);
       const secText = slugs.length ? ` · sections: \`${slugs.join("`, `")}\`` : "";
       md.push(`- ${badge} **${e.title}** (\`${e.name}\`): ${e.description}${secText}`);
+    }
+    if (rankedEntities.length > toShow.length) {
+      md.push(`*(+${rankedEntities.length - toShow.length} more in catalog · run \`operon fetch\` to view all)*`);
     }
   }
 
@@ -171,7 +179,11 @@ export function refreshBootFile(project: Project, promptOverride?: string, opts:
   return bootContent;
 }
 
-export async function bootCommand(prompt: string): Promise<number> {
+export interface BootOptions {
+  semantic?: boolean;
+}
+
+export async function bootCommand(prompt: string, opts: BootOptions = {}): Promise<number> {
   const project = loadProject();
   if (!project) {
     console.log("Operon is not initialized for this repository — proceed normally without Operon.");
@@ -193,6 +205,27 @@ export async function bootCommand(prompt: string): Promise<number> {
       .filter((p) => !isIgnoredSeamPath(p));
   } catch {
     /* ignore unreachable base */
+  }
+
+  // Bidirectional Cache-Aside (L1 Convex -> L2 Meko/YugabyteDB Read-Through on L1 Miss)
+  const currentInvs = readInvariants(dir);
+  const l1Matches = matchInvariants(currentInvs, changed, prompt);
+  if (l1Matches.length === 0 || opts.semantic) {
+    const recalled = await recallInvariantsFromMeko(project, prompt, currentInvs, {
+      sessionId: session.sessionId,
+    });
+    if (recalled.length > 0) {
+      writeInvariants(dir, [...currentInvs, ...recalled]);
+      if (project.config.cloud) {
+        for (const inv of recalled) {
+          await mutateWithOutbox(project, "knowledge:addInvariant", {
+            projectId: project.config.cloud.projectId,
+            projectToken: project.config.cloud.projectToken,
+            ...inv,
+          });
+        }
+      }
+    }
   }
 
   if (project.config.cloud) {

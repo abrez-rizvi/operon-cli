@@ -13,7 +13,34 @@ export interface Issue {
   message: string;
 }
 
-const RESERVED = new Set(["readme.md", "index.md", "boot.md"]);
+const RESERVED = new Set(["readme.md", "index.md", "boot.md", "agents.md", "claude.md", "gemini.md"]);
+
+function isSupporting(rel: string, abs: string): boolean {
+  const parts = rel.replace(/\\/g, "/").split("/");
+  const base = parts[parts.length - 1];
+  if (base === "SKILL.md" || base === "WORKFLOW.md") return false;
+  if (
+    parts.includes("references") ||
+    parts.includes("scripts") ||
+    parts.includes("assets") ||
+    parts.includes("docs")
+  ) {
+    return true;
+  }
+  let cur = path.dirname(abs);
+  for (let i = 0; i < 3; i++) {
+    try {
+      const files = fs.readdirSync(cur);
+      if (files.includes("SKILL.md") || files.includes("WORKFLOW.md")) return true;
+    } catch {
+      break;
+    }
+    const parent = path.dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return false;
+}
 
 /** Picks the OKF schema for a markdown file based on its name and location. */
 function schemaFor(rel: string, isSupportingDoc: boolean): ZodType | null {
@@ -79,8 +106,7 @@ export function validateOkf(root: string): { issues: Issue[]; checked: number } 
         }
         continue;
       }
-      const dirFiles = fs.readdirSync(path.dirname(abs));
-      const supporting = base !== "SKILL.md" && base !== "WORKFLOW.md" && (dirFiles.includes("SKILL.md") || dirFiles.includes("WORKFLOW.md"));
+      const supporting = isSupporting(rel, abs);
       const schema = schemaFor(rel, supporting);
       if (!schema) continue;
       checked++;

@@ -2,16 +2,48 @@ import fs from "node:fs";
 import path from "node:path";
 import { listEntities } from "./entities.js";
 import { copyDir, ensureMemoryFile, POLICY_FILE, walk } from "./local-store.js";
-import { packsDir, templatesDir, toPosix } from "./paths.js";
+import { HARDCODED_DEFAULT_PACK_DIR, packsDir, templatesDir, toPosix } from "./paths.js";
 
 export const DEFAULT_PACK = "default";
 
-/** Ensures ~/.operon/packs/default exists, seeded from bundled templates. */
+/** Resolves the default pack source directory (hardcoded D:\MAIN\operon with fallback to bundled templates). */
+export function defaultPackSource(): string {
+  if (process.env.OPERON_TEMPLATES_DIR && fs.existsSync(process.env.OPERON_TEMPLATES_DIR)) {
+    return process.env.OPERON_TEMPLATES_DIR;
+  }
+  if (fs.existsSync(HARDCODED_DEFAULT_PACK_DIR)) {
+    return HARDCODED_DEFAULT_PACK_DIR;
+  }
+  return templatesDir();
+}
+
+/** Ensures ~/.operon/packs/default exists, seeded from hardcoded D:\MAIN\operon or bundled templates. */
 export function ensureDefaultPack(): string {
   const dest = path.join(packsDir(), DEFAULT_PACK);
-  if (!fs.existsSync(dest)) {
-    for (const sub of ["skills", "workflows"]) copyDir(path.join(templatesDir(), sub), path.join(dest, sub));
+  const src = defaultPackSource();
+  const tmpl = templatesDir();
+
+  const syncSub = (srcDir: string, destDir: string) => {
+    if (!fs.existsSync(srcDir)) return;
+    for (const entry of fs.readdirSync(srcDir)) {
+      const entryDest = path.join(destDir, entry);
+      if (!fs.existsSync(entryDest)) {
+        const entrySrc = path.join(srcDir, entry);
+        if (fs.statSync(entrySrc).isDirectory()) copyDir(entrySrc, entryDest);
+        else {
+          fs.mkdirSync(path.dirname(entryDest), { recursive: true });
+          fs.copyFileSync(entrySrc, entryDest);
+        }
+      }
+    }
+  };
+
+  for (const sub of ["skills", "workflows", "tools"]) {
+    const destSub = path.join(dest, sub);
+    syncSub(path.join(src, sub), destSub);
+    if (src !== tmpl) syncSub(path.join(tmpl, sub), destSub);
   }
+
   return dest;
 }
 

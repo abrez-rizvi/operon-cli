@@ -1,8 +1,10 @@
 import pc from "picocolors";
 import { mutateWithOutbox } from "../core/convex-client.js";
-import { author } from "../core/git.js";
+import { author, currentBranch } from "../core/git.js";
 import { appendMemoryBlock, readInvariants, requireProject, writeInvariants } from "../core/local-store.js";
+import { persistInvariantToMeko } from "../core/meko-client.js";
 import { formatInvariantBlock } from "../core/memory-parser.js";
+import { activeSession } from "../core/sessions.js";
 import type { Invariant } from "../types/okf.js";
 
 export interface RememberOptions {
@@ -71,16 +73,22 @@ export async function rememberCommand(gotcha: string, opts: RememberOptions): Pr
   appendMemoryBlock(project.dir, formatInvariantBlock(inv));
   writeInvariants(project.dir, [...existing.filter((i) => i.code !== inv.code), inv]);
 
-  let synced = false;
-  if (project.config.cloud) {
-    synced = await mutateWithOutbox(project, "knowledge:addInvariant", {
-      projectId: project.config.cloud.projectId,
-      projectToken: project.config.cloud.projectToken,
-      ...inv,
-    });
-  }
+  const sess = activeSession(project.dir, currentBranch(project.root));
+  const [l1Synced, mekoRes] = await Promise.all([
+    project.config.cloud
+      ? mutateWithOutbox(project, "knowledge:addInvariant", {
+          projectId: project.config.cloud.projectId,
+          projectToken: project.config.cloud.projectToken,
+          ...inv,
+        })
+      : Promise.resolve(false),
+    persistInvariantToMeko(project, inv, sess?.sessionId),
+  ]);
 
-  const syncTag = project.config.cloud ? (synced ? "synced to Convex" : "queued in offline outbox") : "saved in .operon/MEMORY.md";
+  const mekoSuffix = mekoRes.persisted ? " + Meko/YugabyteDB (L2)" : "";
+  const syncTag = project.config.cloud
+    ? (l1Synced ? `synced to Convex${mekoSuffix}` : `queued in offline outbox${mekoSuffix}`)
+    : `saved in .operon/MEMORY.md${mekoSuffix}`;
   console.log(`${pc.green("✔")} Recorded invariant [${pc.bold(inv.code)}] (${inv.paths.join(", ")}) — ${syncTag}`);
   console.log(`  ${inv.rule}`);
   return 0;

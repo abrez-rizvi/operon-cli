@@ -4,12 +4,14 @@ import { ConvexHttpClient } from "convex/browser";
 import { anyApi } from "convex/server";
 import { api } from "../../convex/_generated/api.js";
 import type { Project } from "./local-store.js";
+import { readUserGlobalConfig } from "./user-config.js";
 
 declare const __OPERON_CONVEX_URL__: string | undefined;
 
 export { api };
 
-export const DEFAULT_CONVEX_URL = "https://benevolent-vole-734.convex.cloud";
+export const DEMO_CONVEX_URL = "https://benevolent-vole-734.convex.cloud";
+export const DEFAULT_CONVEX_URL = DEMO_CONVEX_URL;
 
 function tryReadEnvFile(filePath: string): string | null {
   try {
@@ -44,8 +46,11 @@ export function resolveConvexUrl(project?: Project | null): string | null {
 
   if (project?.config.cloud?.url) return project.config.cloud.url;
 
+  const userCfg = readUserGlobalConfig();
+  if (userCfg.convexUrl?.trim()) return userCfg.convexUrl.trim();
+
   const baked = typeof __OPERON_CONVEX_URL__ !== "undefined" ? __OPERON_CONVEX_URL__?.trim() : "";
-  return baked || DEFAULT_CONVEX_URL;
+  return baked || null;
 }
 
 export function createClient(url: string, timeoutMs = 15000): ConvexHttpClient {

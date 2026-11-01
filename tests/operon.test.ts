@@ -24,6 +24,11 @@ import {
   matchEntities,
   matchInvariants,
 } from "../src/core/matching.js";
+import {
+  formatInvariantForMeko,
+  parseMekoHitToInvariant,
+  toConversationUuid,
+} from "../src/core/meko-client.js";
 import { formatCheckpointBlock, formatInvariantBlock, parseMemoryFile } from "../src/core/memory-parser.js";
 import { templatesDir } from "../src/core/paths.js";
 import { extractSection, tableOfContents } from "../src/tools/heading-parser.js";
@@ -214,6 +219,41 @@ describe("Operon core & tools", () => {
     const ranked = matchEntities(entities, ["src/auth/token.ts"], "write failing test with tdd");
     expect(ranked[0].entity.name).toBe("tdd");
     expect(ranked[0].matched).toBe(true);
+  });
+
+  it("formats and parses Meko/YugabyteDB L2 semantic memories and deterministic conversation UUIDs", () => {
+    const uuid = toConversationUuid("57dbb8f9");
+    expect(uuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+
+    const inv = buildInvariant("[auth] Token validation requires timingSafeEqual", [], "alice@acme.com", {
+      reason: "Prevents timing side-channel",
+    });
+    const text = formatInvariantForMeko(inv);
+    expect(text).toContain("[AUTH-01]");
+    expect(text).toContain("timingSafeEqual");
+
+    const roundTrip = parseMekoHitToInvariant(
+      { id: "m1", memory: text, score: 0.88, agent_id: "operon:core" },
+      [],
+      "check auth token",
+    );
+    expect(roundTrip.code).toBe("AUTH-01");
+    expect(roundTrip.rule).toBe("Token validation requires timingSafeEqual");
+    expect(roundTrip.reason).toContain("Meko L2 (score 0.88)");
+
+    const crossProject = parseMekoHitToInvariant(
+      {
+        id: "m2",
+        memory: "Nginx proxy requires proxy_read_timeout 3600s for staging websockets",
+        score: 0.79,
+        agent_id: "cursor:infra",
+      },
+      [roundTrip],
+      "fix websocket connection drops in staging",
+    );
+    expect(crossProject.code).toBe("MEKO-01");
+    expect(crossProject.rule).toContain("proxy_read_timeout 3600s");
+    expect(crossProject.reason).toContain("Recalled from Meko/YugabyteDB L2 (score 0.79)");
   });
 });
 

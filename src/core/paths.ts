@@ -24,10 +24,15 @@ export function expandHome(p: string): string {
 /** Converts OS paths to POSIX-style for glob matching & display. */
 export const toPosix = (p: string) => p.split(path.sep).join("/");
 
+export const HARDCODED_DEFAULT_PACK_DIR = "D:\\MAIN\\operon";
+
 let cachedTemplates: string | undefined;
 /** Locates the bundled `templates/` dir (works from dist/ and src/). */
 export function templatesDir(): string {
   if (cachedTemplates) return cachedTemplates;
+  if (process.env.OPERON_TEMPLATES_DIR && fs.existsSync(process.env.OPERON_TEMPLATES_DIR)) {
+    return (cachedTemplates = process.env.OPERON_TEMPLATES_DIR);
+  }
   let dir = path.dirname(fileURLToPath(import.meta.url));
   for (let i = 0; i < 5; i++) {
     const candidate = path.join(dir, "templates");
@@ -35,6 +40,9 @@ export function templatesDir(): string {
       return (cachedTemplates = candidate);
     }
     dir = path.dirname(dir);
+  }
+  if (fs.existsSync(HARDCODED_DEFAULT_PACK_DIR)) {
+    return (cachedTemplates = HARDCODED_DEFAULT_PACK_DIR);
   }
   throw new Error("Operon templates directory not found");
 }

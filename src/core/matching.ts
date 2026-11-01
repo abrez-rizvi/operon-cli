@@ -50,6 +50,7 @@ export interface EntityMatch {
   entity: Entity;
   matched: boolean;
   reasons: string[];
+  score?: number;
 }
 
 const STOP_WORDS = new Set(["the", "and", "for", "with", "from", "into", "that", "this", "when", "keep", "use"]);
@@ -98,15 +99,22 @@ export function matchEntities(entities: Entity[], changedPaths: string[], prompt
       reasons.push(`task match (${matchedKw.slice(0, 2).join(", ")})`);
     }
 
+    let score = 0;
+    if (promptWords.has(entity.name.toLowerCase())) score += 10;
+    score += matchedKw.length * 2;
+    if (reasons.some((r) => r.startsWith("touches "))) score += 5;
+
     results.push({
       entity,
       matched: reasons.length > 0,
       reasons,
+      score,
     });
   }
 
   return results.sort((a, b) => {
     if (a.matched !== b.matched) return a.matched ? -1 : 1;
+    if ((b.score ?? 0) !== (a.score ?? 0)) return (b.score ?? 0) - (a.score ?? 0);
     if (a.entity.kind !== b.entity.kind) return a.entity.kind === "knowledge" ? -1 : 1;
     return a.entity.name.localeCompare(b.entity.name);
   });

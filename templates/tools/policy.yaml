@@ -22,7 +22,9 @@ manifests:
   - composer.json
 debug:
   # Globs where debug-looking output is legitimate (e.g. CLI entrypoints, scripts).
-  allow: []
+  allow:
+    - "tools/**"
+    - "scripts/**"
   # Extra regex markers flagged in any text file.
   markers:
     - '\[DEBUG-[^\]]*\]'

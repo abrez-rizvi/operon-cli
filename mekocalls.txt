@@ -1,0 +1,296 @@
+Here is the exact API and protocol specification for integrating Meko over HTTP/fetch, compiled directly from the Meko MCP server contracts and network audit.
+
+---
+
+### 1. Connection & Authentication Spec
+
+* **Base URL:** `https://mcp.mekodata.ai`
+* **Endpoint Path:** `/mcp`
+* **Transport Protocol:** Model Context Protocol (MCP) Streamable HTTP / JSON-RPC 2.0 (`POST`)
+* **Headers:**
+  ```http
+  Content-Type: application/json
+  Accept: application/json, text/event-stream
+  Authorization: Bearer mko_tkn_<your_token_here>
+  ```
+
+> [!IMPORTANT]
+> Because Meko is hosted via **FastMCP**, all HTTP calls use JSON-RPC 2.0 with the method **`tools/call`**. Tool parameters are passed inside `params.arguments`.  
+> Both `memory_add` and `memory_search` **strictly require a `conversation_id`** (UUID) to nest operational traces into Langfuse.
+
+---
+
+### 2. `memory_add` Specification
+
+Extracts atomic facts or decisions and persists them to working memory (backed by Mem0 on YugabyteDB `pgvector`).
+
+#### Request Payload
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "memory_add",
+    "arguments": {
+      "text": "Adopted constant-time signature comparison (crypto.timingSafeEqual) for all auth tokens.",
+      "conversation_id": "00279028-9030-48f8-a49f-380a5e8d4711",
+      "datapack_id": "dp-4401-b87e-90123456789a",
+      "agent_id": "cursor:operon-core",
+      "metadata": "{\"branch\": \"main\", \"verified\": true}"
+    }
+  }
+}
+```
+
+* **Required Parameters:**
+  * `text` *(string)*: The fact, preference, or decision to extract and store.
+  * `conversation_id` *(string)*: Active session UUID.
+* **Optional Parameters:**
+  * `datapack_id` *(string)*: Target datapack UUID (defaults to pinned tenant default).
+  * `agent_id` *(string)*: Attribution badge (`<client>:<repo>`, defaults to `meko_agent`).
+  * `run_id` *(string)*: Trace nesting ID.
+  * `metadata` *(string)*: Serialized JSON string of arbitrary metadata.
+
+#### Minimal Response Sample
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"results\": [{\"id\": \"c7b73f07-d49a-47e9-ae64-e0437b46937c\", \"memory\": \"Adopted constant-time signature comparison for auth tokens\", \"event\": \"ADD\", \"actor_id\": null, \"role\": \"user\"}]}"
+      }
+    ]
+  }
+}
+```
+
+---
+
+### 3. `memory_search` Specification
+
+Performs hybrid semantic and keyword search against memories scoped to `(datapack_id, user_id)`.
+
+#### Request Payload
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "memory_search",
+    "arguments": {
+      "query": "signature comparison auth token invariant",
+      "conversation_id": "00279028-9030-48f8-a49f-380a5e8d4711",
+      "datapack_id": "dp-4401-b87e-90123456789a",
+      "limit": 5
+    }
+  }
+}
+```
+
+* **Required Parameters:**
+  * `query` *(string)*: Natural language search string.
+  * `conversation_id` *(string)*: UUID for trace nesting (cannot be empty).
+* **Optional Parameters:**
+  * `datapack_id` *(string)*: Target datapack UUID.
+  * `limit` *(integer)*: Maximum items returned (default: 10).
+  * `run_id` *(string)*: Filters rows where `meko_conversation_id == run_id`.
+  * `agent_id` *(string)*: Trace logging only (does **not** filter memory reads).
+
+#### Minimal Response Sample
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"results\": [{\"id\": \"c7b73f07-d49a-47e9-ae64-e0437b46937c\", \"memory\": \"Adopted constant-time signature comparison for auth tokens\", \"hash\": \"4a1f893de821b34e56c12890aef4539120894561bcf7823901456789abcdef01\", \"score\": 0.814, \"raw_similarity_score\": 0.722, \"created_at\": \"2026-10-31T08:14:22Z\", \"user_id\": \"us-east-1:a1b2c3d4\", \"agent_id\": \"cursor:operon-core\", \"role\": \"user\"}]}"
+      }
+    ]
+  }
+}
+```
+
+---
+
+### 4. Common Error Codes & Shapes
+
+#### A. Quota / Rate Limit Exceeded (`HTTP 429` or JSON-RPC `-32000`)
+Standard tiers enforce a lifetime cap of **1,000 queries** on `memory_search`:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "error": {
+    "code": -32000,
+    "message": "Rate limit exceeded: 1000 query lifetime quota reached for tier 'standard'",
+    "data": {
+      "quota": 1000,
+      "consumed": 1000,
+      "type": "quota_exceeded"
+    }
+  }
+}
+```
+
+#### B. Langfuse Turn Crash Boundary (`HTTP 404` / JSON-RPC Error)
+When a conversation exceeds 25–35 turns without compaction:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32603,
+    "message": "Internal error: Conversation trace payload exceeded size limit",
+    "detail": "Conversation 00279028-9030-48f8-a49f-380a5e8d4711 not found"
+  }
+}
+```
+
+#### C. Invalid Auth / Read-Only (`HTTP 401` / `HTTP 403`)
+```json
+{
+  "error": "unauthorized",
+  "detail": "Invalid or expired Bearer token"
+}
+```
+
+---
+
+### 5. Ready-to-Use TypeScript Implementation
+
+```typescript
+interface MekoToolResponse<T> {
+  jsonrpc: "2.0";
+  id: number;
+  result?: {
+    content: Array<{ type: string; text: string }>;
+  };
+  error?: {
+    code: number;
+    message: string;
+    detail?: string;
+  };
+}
+
+export class MekoClient {
+  private baseUrl = "https://mcp.mekodata.ai/mcp";
+  private token: string;
+  private datapackId?: string;
+
+  constructor(token: string, datapackId?: string) {
+    this.token = token;
+    this.datapackId = datapackId;
+  }
+
+  private async callTool<T>(name: string, args: Record<string, any>): Promise<T> {
+    const response = await fetch(this.baseUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "Authorization": `Bearer ${this.token}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: Date.now(),
+        method: "tools/call",
+        params: {
+          name,
+          arguments: {
+            ...args,
+            datapack_id: args.datapack_id ?? this.datapackId,
+          },
+        },
+      }),
+    });
+
+    if (response.status === 429) {
+      throw new Error("[Meko Quota Exceeded] 1,000 query lifetime limit reached.");
+    }
+
+    if (!response.ok) {
+      throw new Error(`[Meko HTTP Error] ${response.status}: ${await response.text()}`);
+    }
+
+    const data: MekoToolResponse<T> = await response.json();
+
+    if (data.error) {
+      throw new Error(`[Meko MCP Error ${data.error.code}]: ${data.error.message}`);
+    }
+
+    const rawText = data.result?.content?.[0]?.text;
+    if (!rawText) throw new Error("Empty response from Meko tool execution.");
+
+    return JSON.parse(rawText) as T;
+  }
+
+  // 1. memory_add
+  async memoryAdd(text: string, conversationId: string, agentId = "operon:dev") {
+    return this.callTool<{ results: Array<{ id: string; memory: string; event: string }> }>(
+      "memory_add",
+      { text, conversation_id: conversationId, agent_id: agentId }
+    );
+  }
+
+  // 2. memory_search
+  async memorySearch(query: string, conversationId: string, limit = 5) {
+    return this.callTool<{ results: Array<{ id: string; memory: string; score: number }> }>(
+      "memory_search",
+      { query, conversation_id: conversationId, limit }
+    );
+  }
+}
+```
+
+---
+
+### 6. Minimal `curl` Snippets
+
+#### `memory_add`:
+```bash
+curl -X POST https://mcp.mekodata.ai/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Authorization: Bearer mko_tkn_YOUR_TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "memory_add",
+      "arguments": {
+        "text": "Standardized on constant-time token comparison.",
+        "conversation_id": "00279028-9030-48f8-a49f-380a5e8d4711",
+        "agent_id": "cursor:dev"
+      }
+    }
+  }'
+```
+
+#### `memory_search`:
+```bash
+curl -X POST https://mcp.mekodata.ai/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Authorization: Bearer mko_tkn_YOUR_TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/call",
+    "params": {
+      "name": "memory_search",
+      "arguments": {
+        "query": "constant-time token comparison",
+        "conversation_id": "00279028-9030-48f8-a49f-380a5e8d4711",
+        "limit": 5
+      }
+    }
+  }'
+```

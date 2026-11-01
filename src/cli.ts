@@ -49,6 +49,7 @@ cli.command("status", "Show current .operon/ project status, invite code, and me
 cli
   .command("setup", "Scan installed AI harnesses, arm global trampolines, seed the pack library")
   .option("-y, --yes", "Accept defaults without interactive prompts")
+  .option("--reset", "Reset cloud and Meko endpoints to local defaults")
   .action(run(setupCommand));
 
 cli
@@ -89,7 +90,10 @@ cli
   .action(run(watchCommand));
 
 // Agent lifecycle
-cli.command("boot <prompt>", "Write .operon/BOOT.md with active workflow, skills, and invariants").action(run(bootCommand));
+cli
+  .command("boot <prompt>", "Write .operon/BOOT.md with active workflow, skills, and invariants")
+  .option("--semantic", "Force L2 Meko/YugabyteDB semantic memory recall even when L1 hits exist")
+  .action(run(bootCommand));
 cli.command("fetch [entity]", "Slice a skill/knowledge section (<entity>[:<heading>]) or list catalog").action(run(fetchCommand));
 cli
   .command("checkpoint <message>", "Append an okf:checkpoint block to .operon/MEMORY.md")

@@ -8,7 +8,7 @@ export default defineConfig({
   clean: true,
   banner: { js: "#!/usr/bin/env node" },
   define: {
-    // Baked-in default Convex deployment; override at runtime with OPERON_CONVEX_URL.
-    __OPERON_CONVEX_URL__: JSON.stringify(process.env.OPERON_CONVEX_URL ?? "https://benevolent-vole-734.convex.cloud"),
+    // Optional baked-in Convex deployment override via environment variable during build.
+    __OPERON_CONVEX_URL__: JSON.stringify(process.env.OPERON_CONVEX_URL ?? ""),
   },
 });
