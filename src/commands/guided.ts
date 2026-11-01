@@ -114,7 +114,7 @@ export async function guidedCommand(): Promise<number> {
   });
   if (isCancel(action) || action === "exit") return 0;
   if (action === "watch") return await watchCommand();
-  if (action === "share") return await shareCommand({ yes: true });
+  if (action === "share") return await shareCommand();
   if (action === "pull") return await syncCommand({ pull: true });
   if (action === "verify") return await verifyCommand();
   if (action === "add") {

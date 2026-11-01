@@ -23,7 +23,7 @@ export async function shareCommand(opts: ShareOptions = {}): Promise<number> {
   }
   let url = resolveConvexUrl(project);
   if (!url) {
-    if (isInteractive() && !opts.yes) {
+    if (isInteractive()) {
       const choice = await select({
         message: "No Convex deployment configured. Select a cloud backend to share:",
         options: [
@@ -65,6 +65,8 @@ export async function shareCommand(opts: ShareOptions = {}): Promise<number> {
         writeUserGlobalConfig({ ...readUserGlobalConfig(), convexUrl: url });
         console.log(`${pc.green("✔")} Saved Convex URL in ~/.operon/config.json`);
       }
+    } else if (opts.yes) {
+      url = DEMO_CONVEX_URL;
     } else {
       throw new OperonError(
         "No Convex deployment URL configured. Set `OPERON_CONVEX_URL=https://<your-deployment>.convex.cloud` and re-run `operon share`.",
