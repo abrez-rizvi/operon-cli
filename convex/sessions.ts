@@ -1,10 +1,11 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server.js";
 import { requireProjectToken } from "./auth.js";
+import { emitEvent } from "./events.js";
 
 const MAX_CHECKPOINTS = 50;
 
-/** Appends a checkpoint to the active session record in Convex (capped at 50 entries). */
+/** Appends a checkpoint to the active session record in Convex and emits a `checkpoint` event on the bus. */
 export const checkpoint = mutation({
   args: {
     projectId: v.id("projects"),
@@ -26,7 +27,16 @@ export const checkpoint = mutation({
       .first();
     const entry = { timestamp: now, message: args.message };
     const status = args.close ? ("closed" as const) : ("in-flight" as const);
+    let docId = existing?._id;
+
     if (existing) {
+      if (
+        existing.lastCheckpoint === args.message &&
+        existing.status === status &&
+        now - existing.updatedAt < 10000
+      ) {
+        return existing._id;
+      }
       const checkpoints = [...existing.checkpoints, entry].slice(-MAX_CHECKPOINTS);
       await ctx.db.patch(existing._id, {
         status,
@@ -36,24 +46,37 @@ export const checkpoint = mutation({
         checkpoints,
         updatedAt: now,
       });
-      return existing._id;
+    } else {
+      docId = await ctx.db.insert("sessions", {
+        projectId: args.projectId,
+        sessionId: args.sessionId,
+        branch: args.branch,
+        author: args.author,
+        status,
+        lastCheckpoint: args.message,
+        task: args.task,
+        touchedPaths: args.touchedPaths,
+        checkpoints: [entry],
+        updatedAt: now,
+      });
     }
-    return await ctx.db.insert("sessions", {
+
+    await emitEvent(ctx, {
       projectId: args.projectId,
+      type: "checkpoint",
       sessionId: args.sessionId,
-      branch: args.branch,
       author: args.author,
-      status,
-      lastCheckpoint: args.message,
-      task: args.task,
-      touchedPaths: args.touchedPaths,
-      checkpoints: [entry],
-      updatedAt: now,
+      branch: args.branch,
+      summary: args.message,
+      paths: args.touchedPaths,
+      timestamp: now,
     });
+
+    return docId;
   },
 });
 
-/** Declares or updates an in-flight working seam (task + touched file paths) for real-time collision detection. */
+/** Declares or updates an in-flight working seam (task + touched file paths) and emits a `seam` event when changed. */
 export const declareSeam = mutation({
   args: {
     projectId: v.id("projects"),
@@ -71,6 +94,13 @@ export const declareSeam = mutation({
       .query("sessions")
       .withIndex("by_project_and_session", (q) => q.eq("projectId", args.projectId).eq("sessionId", args.sessionId))
       .first();
+
+    const prevPaths = (existing?.touchedPaths ?? []).slice().sort().join(",");
+    const nextPaths = args.touchedPaths.slice().sort().join(",");
+    const pathsChanged = prevPaths !== nextPaths;
+    const taskChanged = args.task !== undefined && args.task !== (existing?.task ?? "");
+
+    let docId = existing?._id;
     if (existing) {
       await ctx.db.patch(existing._id, {
         branch: args.branch,
@@ -80,20 +110,35 @@ export const declareSeam = mutation({
         touchedPaths: args.touchedPaths,
         updatedAt: now,
       });
-      return existing._id;
+    } else {
+      docId = await ctx.db.insert("sessions", {
+        projectId: args.projectId,
+        sessionId: args.sessionId,
+        branch: args.branch,
+        author: args.author,
+        status: "in-flight",
+        lastCheckpoint: args.task ? `Task: ${args.task}` : "Working in-flight",
+        task: args.task,
+        touchedPaths: args.touchedPaths,
+        checkpoints: [],
+        updatedAt: now,
+      });
     }
-    return await ctx.db.insert("sessions", {
-      projectId: args.projectId,
-      sessionId: args.sessionId,
-      branch: args.branch,
-      author: args.author,
-      status: "in-flight",
-      lastCheckpoint: args.task ? `Task: ${args.task}` : "Working in-flight",
-      task: args.task,
-      touchedPaths: args.touchedPaths,
-      checkpoints: [],
-      updatedAt: now,
-    });
+
+    if ((pathsChanged && args.touchedPaths.length > 0) || (!existing && args.touchedPaths.length > 0) || taskChanged) {
+      await emitEvent(ctx, {
+        projectId: args.projectId,
+        type: "seam",
+        sessionId: args.sessionId,
+        author: args.author,
+        branch: args.branch,
+        summary: args.task || existing?.task || `Touching ${args.touchedPaths.slice(0, 3).join(", ")}`,
+        paths: args.touchedPaths,
+        timestamp: now,
+      });
+    }
+
+    return docId;
   },
 });
 

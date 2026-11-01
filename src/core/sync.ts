@@ -84,14 +84,8 @@ export async function pullLatest(project: Project, timeoutMs = 6000): Promise<"l
     if (!snap) return "local";
 
     const lastPullAt = project.config.lastPullAt ?? 0;
-    const localMem = readMemoryContent(project.dir);
     for (const f of snap.files) {
-      if (f.path === INVARIANTS_FILE) continue;
-      if (f.path === MEMORY_FILE) {
-        const merged = mergeMemoryContent(f.content, localMem);
-        writeProjectFile(project.dir, MEMORY_FILE, merged);
-        continue;
-      }
+      if (f.path === INVARIANTS_FILE || f.path === MEMORY_FILE) continue;
       const localFile = path.join(project.dir, f.path);
       if (lastPullAt > 0 && fs.existsSync(localFile)) {
         const stat = fs.statSync(localFile);
@@ -168,11 +162,18 @@ export async function pushSeam(
 
 export async function pushCheckpoint(
   project: Project,
-  payload: { sessionId: string; branch: string; author: string; message: string; close: boolean },
+  payload: {
+    sessionId: string;
+    branch: string;
+    author: string;
+    message: string;
+    task?: string;
+    touchedPaths?: string[];
+    close: boolean;
+  },
 ): Promise<void> {
   const cloud = project.config.cloud;
   if (!cloud) return;
-  await pushMemoryFile(project);
   await mutateWithOutbox(project, "sessions:checkpoint", {
     projectId: cloud.projectId,
     projectToken: cloud.projectToken,

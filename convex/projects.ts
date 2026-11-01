@@ -3,6 +3,8 @@ import { v } from "convex/values";
 import type { DataModel, Id } from "./_generated/dataModel.js";
 import { mutation, query } from "./_generated/server.js";
 import { randomToken, requireProjectToken, sha256Hex, slugifyProject } from "./auth.js";
+import { upsertParsedEntity } from "./entities.js";
+import { emitEvent } from "./events.js";
 import { parseOkfMemory } from "./memory.js";
 
 const categoryValidator = v.union(
@@ -25,10 +27,26 @@ async function ingestOkfMemory(
       .withIndex("by_project_and_code", (q) => q.eq("projectId", projectId).eq("code", inv.code))
       .first();
     if (existing) {
+      const unchanged =
+        existing.rule === inv.rule &&
+        existing.reason === inv.reason &&
+        existing.paths.join(",") === inv.paths.join(",");
+      if (unchanged) continue;
       await ctx.db.patch(existing._id, inv);
     } else {
       await ctx.db.insert("invariants", { projectId, ...inv });
     }
+    await emitEvent(ctx, {
+      projectId,
+      type: "invariant_added",
+      sessionId: "memory",
+      author: inv.author,
+      branch: "main",
+      summary: inv.rule,
+      code: inv.code,
+      paths: inv.paths,
+      timestamp: inv.timestamp,
+    });
   }
 
   for (const cp of parsed.checkpoints) {
@@ -38,8 +56,11 @@ async function ingestOkfMemory(
       .first();
     const entry = { timestamp: cp.timestamp, message: cp.message };
     if (existing) {
-      const hasEntry = existing.checkpoints.some((c) => c.timestamp === cp.timestamp && c.message === cp.message);
-      const checkpoints = (hasEntry ? existing.checkpoints : [...existing.checkpoints, entry]).slice(-50);
+      const hasEntry =
+        existing.lastCheckpoint === cp.message ||
+        existing.checkpoints.some((c) => c.message === cp.message && Math.abs(c.timestamp - cp.timestamp) < 5000);
+      if (hasEntry) continue;
+      const checkpoints = [...existing.checkpoints, entry].slice(-50);
       await ctx.db.patch(existing._id, {
         author: cp.author,
         branch: cp.branch,
@@ -64,6 +85,16 @@ async function ingestOkfMemory(
         updatedAt: cp.timestamp,
       });
     }
+    await emitEvent(ctx, {
+      projectId,
+      type: "checkpoint",
+      sessionId: cp.sessionId,
+      author: cp.author,
+      branch: cp.branch,
+      summary: cp.message,
+      paths: cp.touchedPaths,
+      timestamp: cp.timestamp,
+    });
   }
 
   return { invariants: parsed.invariants.length, checkpoints: parsed.checkpoints.length };
@@ -106,7 +137,7 @@ export const createOrGet = mutation({
   },
 });
 
-/** Exchanges a high-entropy inviteCode for the project snapshot, invariants, and secret token (`operon join`). */
+/** Exchanges a high-entropy inviteCode for the project hydration snapshot (`operon join`). */
 export const getSnapshot = query({
   args: { inviteCode: v.string() },
   handler: async (ctx, { inviteCode }) => {
@@ -128,6 +159,10 @@ export const getSnapshot = query({
       .withIndex("by_project", (q) => q.eq("projectId", project._id))
       .collect();
     sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+    const entities = await ctx.db
+      .query("entities")
+      .withIndex("by_project", (q) => q.eq("projectId", project._id))
+      .collect();
     return {
       projectId: project._id,
       name: project.name,
@@ -153,6 +188,18 @@ export const getSnapshot = query({
         touchedPaths: s.touchedPaths ?? [],
         updatedAt: s.updatedAt,
       })),
+      entities: entities.map((e) => ({
+        kind: e.kind,
+        name: e.name,
+        path: e.path,
+        title: e.title,
+        description: e.description,
+        tags: e.tags,
+        triggers: e.triggers,
+        paths: e.paths,
+        sections: e.sections.map((s) => ({ slug: s.slug, heading: s.heading, level: s.level })),
+        updatedAt: e.updatedAt,
+      })),
     };
   },
 });
@@ -171,7 +218,7 @@ export const redeemInvite = mutation({
   },
 });
 
-/** Upserts a single file in the cloud hydration snapshot (and parses OKF tags if MEMORY.md). */
+/** Upserts a single file in the cloud hydration snapshot (and indexes structured entity or OKF memory). */
 export const syncFile = mutation({
   args: {
     projectId: v.id("projects"),
@@ -184,6 +231,8 @@ export const syncFile = mutation({
     await requireProjectToken(ctx, args.projectId, args.projectToken);
     if (args.path === "MEMORY.md" || args.path.endsWith("/MEMORY.md")) {
       await ingestOkfMemory(ctx, args.projectId, args.content);
+    } else {
+      await upsertParsedEntity(ctx, args.projectId, args.path, args.content, args.category);
     }
     const existing = await ctx.db
       .query("files")
@@ -223,6 +272,8 @@ export const syncFiles = mutation({
     for (const file of args.files) {
       if (file.path === "MEMORY.md" || file.path.endsWith("/MEMORY.md")) {
         await ingestOkfMemory(ctx, args.projectId, file.content);
+      } else {
+        await upsertParsedEntity(ctx, args.projectId, file.path, file.content, file.category);
       }
       const existing = await ctx.db
         .query("files")

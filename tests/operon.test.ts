@@ -5,6 +5,8 @@ import { api } from "../convex/_generated/api.js";
 import * as apiMod from "../convex/_generated/api.js";
 import * as serverMod from "../convex/_generated/server.js";
 import * as auth from "../convex/auth.js";
+import * as entitiesMod from "../convex/entities.js";
+import * as eventsMod from "../convex/events.js";
 import * as knowledge from "../convex/knowledge.js";
 import * as memoryMod from "../convex/memory.js";
 import * as projects from "../convex/projects.js";
@@ -15,7 +17,13 @@ import { parseGitSource } from "../src/commands/add.js";
 import { parseInviteInput } from "../src/commands/join.js";
 import { buildInvariant } from "../src/commands/remember.js";
 import { listEntities } from "../src/core/entities.js";
-import { classifyWorkflow, detectSeamCollisions, matchInvariants } from "../src/core/matching.js";
+import {
+  classifyWorkflow,
+  detectSeamCollisions,
+  isIgnoredSeamPath,
+  matchEntities,
+  matchInvariants,
+} from "../src/core/matching.js";
 import { formatCheckpointBlock, formatInvariantBlock, parseMemoryFile } from "../src/core/memory-parser.js";
 import { templatesDir } from "../src/core/paths.js";
 import { extractSection, tableOfContents } from "../src/tools/heading-parser.js";
@@ -26,6 +34,8 @@ const modules: Record<string, () => Promise<any>> = {
   "../convex/_generated/api.ts": async () => apiMod,
   "../convex/_generated/server.ts": async () => serverMod,
   "../convex/auth.ts": async () => auth,
+  "../convex/entities.ts": async () => entitiesMod,
+  "../convex/events.ts": async () => eventsMod,
   "../convex/memory.ts": async () => memoryMod,
   "../convex/projects.ts": async () => projects,
   "../convex/knowledge.ts": async () => knowledge,
@@ -150,6 +160,61 @@ describe("Operon core & tools", () => {
     expect(byPrompt.collisions).toHaveLength(1);
     expect(byPrompt.collisions[0].overlappingPaths).toEqual(["src/auth/tokens.ts"]);
   });
+
+  it("ignores Operon harness files and synthetic wal-* self-sessions in seam collision detection", () => {
+    expect(isIgnoredSeamPath(".cursor/rules/operon.mdc")).toBe(true);
+    expect(isIgnoredSeamPath(".gitignore")).toBe(true);
+    expect(isIgnoredSeamPath("CLAUDE.md")).toBe(true);
+    expect(isIgnoredSeamPath("AGENTS.md")).toBe(true);
+    expect(isIgnoredSeamPath(".operon/BOOT.md")).toBe(true);
+    expect(isIgnoredSeamPath("src/auth/tokens.ts")).toBe(false);
+
+    const now = Date.now();
+    const remote = [
+      {
+        sessionId: "remote-1",
+        branch: "main",
+        author: "dhruv@acme.com",
+        status: "in-flight" as const,
+        lastCheckpoint: "Arming workspace",
+        task: "init",
+        touchedPaths: [".cursor/rules/operon.mdc", ".gitignore", "CLAUDE.md"],
+        updatedAt: now - 2000,
+      },
+      {
+        sessionId: "wal-main",
+        branch: "main",
+        author: "alice@acme.com",
+        status: "in-flight" as const,
+        lastCheckpoint: "Self checkpoint without session attr",
+        task: "auth work",
+        touchedPaths: ["src/auth/tokens.ts"],
+        updatedAt: now - 1000,
+      },
+    ];
+
+    const res = detectSeamCollisions(
+      [".cursor/rules/operon.mdc", ".gitignore", "src/auth/tokens.ts"],
+      "auth work",
+      remote,
+      "local-1",
+      now,
+      "alice@acme.com",
+    );
+    expect(res.collisions).toHaveLength(0);
+    expect(res.activeTeammates).toHaveLength(1);
+    expect(res.activeTeammates[0].sessionId).toBe("remote-1");
+  });
+
+  it("indexes skill sections and matches knowledge & skills against task intent", () => {
+    const entities = listEntities(path.resolve(templatesDir()));
+    const tdd = entities.find((e) => e.name === "tdd");
+    expect(tdd?.sections.map((s) => s.slug)).toContain("red-phase");
+
+    const ranked = matchEntities(entities, ["src/auth/token.ts"], "write failing test with tdd");
+    expect(ranked[0].entity.name).toBe("tdd");
+    expect(ranked[0].matched).toBe(true);
+  });
 });
 
 describe("Convex Cloud Brain (convex-test)", () => {
@@ -198,5 +263,82 @@ describe("Convex Cloud Brain (convex-test)", () => {
         code: "AUTH-01",
       }),
     ).rejects.toThrow(/Unauthorized/);
+  });
+
+  it("streams typed events on the reactive event bus and slices structured entities in Convex", async () => {
+    const t = convexTest(schema, modules);
+    const created = await t.mutation(api.projects.createOrGet, {
+      name: "event-bus-demo",
+      repoHash: "hash-bus",
+    });
+
+    // 1. Sync a skill file -> parsed into structured `entities` table + emits `entity_synced` event
+    const skillMd = [
+      "---",
+      "type: Skill",
+      "name: api-design",
+      "title: API Boundary Contracts",
+      "description: Keep REST and RPC schemas backward compatible.",
+      "tags: [api, contracts]",
+      "paths: [src/api/**]",
+      "---",
+      "# API Boundary Contracts",
+      "## Versioning Rules",
+      "Never remove required fields without a deprecation window.",
+      "## Error Payloads",
+      "Return structured `{ code, message }` objects.",
+    ].join("\n");
+
+    await t.mutation(api.projects.syncFile, {
+      projectId: created.projectId,
+      projectToken: created.projectToken,
+      path: "skills/api-design/SKILL.md",
+      content: skillMd,
+      category: "skill",
+    });
+
+    // 2. Publish typed invariant and checkpoint mutations directly
+    await t.mutation(api.knowledge.addInvariant, {
+      projectId: created.projectId,
+      projectToken: created.projectToken,
+      code: "API-01",
+      trigger: "\\b(api|schema)\\b",
+      rule: "All endpoints return { status, data }",
+      reason: "Frontend client wrapper expects envelope",
+      paths: ["src/api/**"],
+      author: "alice@acme.com",
+      timestamp: Date.now(),
+    });
+
+    await t.mutation(api.sessions.checkpoint, {
+      projectId: created.projectId,
+      projectToken: created.projectToken,
+      sessionId: "sess-1",
+      branch: "feat/api",
+      author: "alice@acme.com",
+      message: "Added envelope validator",
+      touchedPaths: ["src/api/envelope.ts"],
+    });
+
+    // 3. Query reactive `events:subscribeFeed`
+    const feed = await t.query(api.events.subscribeFeed, {
+      inviteCode: created.inviteCode,
+      limit: 20,
+    });
+    expect(feed).not.toBeNull();
+    expect(feed?.events.map((e) => e.type)).toEqual(["entity_synced", "invariant_added", "checkpoint"]);
+    expect(feed?.entities).toHaveLength(1);
+    expect(feed?.entities[0].name).toBe("api-design");
+    expect(feed?.entities[0].sections.map((s) => s.slug)).toEqual(["versioning-rules", "error-payloads"]);
+
+    // 4. Slice section directly from Convex via `entities:getSection`
+    const sliced = await t.query(api.entities.getSection, {
+      projectId: created.projectId,
+      name: "api-design",
+      section: "versioning-rules",
+    });
+    expect(sliced?.found).toBe(true);
+    expect(sliced?.sectionText).toContain("## Versioning Rules");
+    expect(sliced?.sectionText).not.toContain("## Error Payloads");
   });
 });

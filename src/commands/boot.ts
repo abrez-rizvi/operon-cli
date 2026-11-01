@@ -10,7 +10,14 @@ import {
   writeProjectFile,
   type Project,
 } from "../core/local-store.js";
-import { classifyWorkflow, detectSeamCollisions, matchInvariants, timeAgo } from "../core/matching.js";
+import {
+  classifyWorkflow,
+  detectSeamCollisions,
+  isIgnoredSeamPath,
+  matchEntities,
+  matchInvariants,
+  timeAgo,
+} from "../core/matching.js";
 import { activeSession, ensureSession } from "../core/sessions.js";
 import { pullLatest, pushSeam, readRemoteSessions, remoteSessionNote } from "../core/sync.js";
 import { parseHeadings } from "../tools/heading-parser.js";
@@ -49,7 +56,9 @@ export function refreshBootFile(project: Project, promptOverride?: string, opts:
 
   let changed: string[] = [];
   try {
-    changed = changedFiles(root, base).map((f) => f.path);
+    changed = changedFiles(root, base)
+      .map((f) => f.path)
+      .filter((p) => !isIgnoredSeamPath(p));
   } catch {
     /* ignore unreachable base */
   }
@@ -61,14 +70,24 @@ export function refreshBootFile(project: Project, promptOverride?: string, opts:
     entities.filter((e) => e.kind === "workflow"),
     prompt,
   );
+  const rankedEntities = matchEntities(entities, changed, prompt);
   const memCheckpoints = readMemoryCheckpoints(dir);
   const remoteSessions = readRemoteSessions(dir);
-  const { collisions, activeTeammates } = detectSeamCollisions(changed, prompt, remoteSessions, session?.sessionId);
-  const nowIso = new Date().toISOString();
+  const { collisions, activeTeammates } = detectSeamCollisions(
+    changed,
+    prompt,
+    remoteSessions,
+    session?.sessionId,
+    Date.now(),
+    me,
+  );
 
   const md: string[] = [];
   md.push(`# Operon Boot · ${config.name} · ${branch}`);
   md.push(`Task: ${prompt}`);
+  md.push(
+    `> **Operon Live Peer Bridge (Convex):** Read-only live feed of teammate contracts, checkpoints, and in-flight file edits.`,
+  );
   if (opts.offlineNote) md.push(`*(cloud unreachable — using local .operon/ cache)*`);
 
   if (session && (opts.resumed || session.checkpoints.length || memCheckpoints.length)) {
@@ -98,7 +117,8 @@ export function refreshBootFile(project: Project, promptOverride?: string, opts:
   const activityLines: string[] = [];
   if (opts.teammateOverride) activityLines.push(opts.teammateOverride);
   for (const t of activeTeammates.slice(0, 3)) {
-    const pathsLabel = t.touchedPaths?.length ? ` [touching: ${t.touchedPaths.slice(0, 4).join(", ")}]` : "";
+    const cleanTouched = (t.touchedPaths ?? []).filter((p) => !isIgnoredSeamPath(p));
+    const pathsLabel = cleanTouched.length ? ` [touching: ${cleanTouched.slice(0, 4).join(", ")}]` : "";
     const line = `Latest on \`${t.branch}\` by ${t.author} (${timeAgo(t.updatedAt)}, ${t.status}): ${t.lastCheckpoint}${pathsLabel}`;
     if (!activityLines.includes(line)) activityLines.push(line);
   }
@@ -127,28 +147,23 @@ export function refreshBootFile(project: Project, promptOverride?: string, opts:
     });
   }
 
-  const skills = entities.filter((e) => e.kind === "skill");
-  if (skills.length) {
-    md.push("", "## Active Skills (in `.operon/skills/`)");
-    for (const s of skills) {
-      md.push(`- **${s.title}** (\`.operon/skills/${s.name}/SKILL.md\`): ${s.description}`);
+  if (rankedEntities.length > 0) {
+    md.push("", "## Knowledge & Skills (`operon fetch <name>:<section>`)");
+    for (const { entity: e, matched: isHit, reasons } of rankedEntities) {
+      const badge = isHit ? `[${e.kind} ★ ${reasons.join(", ")}]` : `[${e.kind}]`;
+      const slugs = e.sections.slice(0, 5).map((s) => s.slug);
+      const secText = slugs.length ? ` · sections: \`${slugs.join("`, `")}\`` : "";
+      md.push(`- ${badge} **${e.title}** (\`${e.name}\`): ${e.description}${secText}`);
     }
   }
 
   md.push(
     "",
-    "## How to Log Progress & Gotchas (Edit `.operon/MEMORY.md` Directly)",
-    "Do NOT run extra CLI commands while coding. Append OKF blocks directly to `.operon/MEMORY.md`:",
-    "```markdown",
-    `<!-- okf:checkpoint ts="${nowIso}" author="${me}" branch="${branch}" -->`,
-    "One-line status update (every 2-3 code-modifying turns).",
-    "<!-- /okf:checkpoint -->",
-    "",
-    `<!-- okf:invariant code="SCOPE-01" paths="src/scope/**" ts="${nowIso}" author="${me}" -->`,
-    "Non-obvious project rule or gotcha discovered during work.",
-    "<!-- /okf:invariant -->",
-    "```",
-    "- Before reporting done: run `operon verify` (validates `.operon/MEMORY.md`, checks LOC ceiling & debug logs, and syncs to Convex).",
+    "## Live Broadcast Commands (Convex Event Bus)",
+    "- **Broadcast progress (every 2-3 turns):** `operon checkpoint \"<summary>\"`",
+    "- **Broadcast contract / gotcha:** `operon remember \"[scope] <rule>\" --paths \"src/scope/**\"`",
+    "- **Slice skill / knowledge section:** `operon fetch <name>:<section>` (or `operon fetch` for full catalog)",
+    "- **Before finishing:** run `operon verify` (must exit 0).",
   );
 
   const bootContent = md.join("\n") + "\n";
@@ -173,7 +188,9 @@ export async function bootCommand(prompt: string): Promise<number> {
 
   let changed: string[] = [];
   try {
-    changed = changedFiles(root, base).map((f) => f.path);
+    changed = changedFiles(root, base)
+      .map((f) => f.path)
+      .filter((p) => !isIgnoredSeamPath(p));
   } catch {
     /* ignore unreachable base */
   }
@@ -196,6 +213,6 @@ export async function bootCommand(prompt: string): Promise<number> {
   });
 
   console.log(bootContent.trimEnd());
-  console.log(pc.green(`\n✔ Wrote .operon/BOOT.md — append checkpoints & invariants to .operon/MEMORY.md as you work.`));
+  console.log(pc.green(`\n✔ Wrote .operon/BOOT.md — use \`operon checkpoint\` & \`operon remember\` to broadcast live.`));
   return 0;
 }

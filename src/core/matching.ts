@@ -46,6 +46,72 @@ export function classifyWorkflow(workflows: Entity[], prompt: string): { workflo
   return { workflow: workflows.find((w) => w.data.default === true) ?? workflows[0], matched: [] };
 }
 
+export interface EntityMatch {
+  entity: Entity;
+  matched: boolean;
+  reasons: string[];
+}
+
+const STOP_WORDS = new Set(["the", "and", "for", "with", "from", "into", "that", "this", "when", "keep", "use"]);
+
+/** Matches skills and knowledge docs spatially (touched paths vs globs) and by task intent (keywords/triggers/sections). */
+export function matchEntities(entities: Entity[], changedPaths: string[], prompt: string): EntityMatch[] {
+  const cleanPaths = changedPaths.filter((p) => !isIgnoredSeamPath(p));
+  const promptWords = new Set(
+    prompt
+      .toLowerCase()
+      .match(/[a-z0-9_-]{3,}/g)
+      ?.filter((w) => !STOP_WORDS.has(w)) ?? [],
+  );
+
+  const results: EntityMatch[] = [];
+  for (const entity of entities) {
+    if (entity.kind === "workflow") continue;
+    const reasons: string[] = [];
+
+    if (entity.paths.length > 0) {
+      if (entity.paths.some((g) => GLOBAL.has(g))) {
+        reasons.push("project-wide");
+      } else {
+        const hit = cleanPaths.find((p) => entity.paths.some((g) => minimatch(p, g, { dot: true, nocase: true })));
+        if (hit) reasons.push(`touches ${hit}`);
+      }
+    }
+
+    const keywords = new Set<string>();
+    for (const t of [...entity.triggers, ...entity.tags]) {
+      for (const tok of t.toLowerCase().split(/[^a-z0-9_-]+/)) {
+        if (tok.length >= 3 && !STOP_WORDS.has(tok)) keywords.add(tok);
+      }
+    }
+    for (const tok of `${entity.name} ${entity.title}`.toLowerCase().split(/[^a-z0-9_-]+/)) {
+      if (tok.length >= 3 && !STOP_WORDS.has(tok)) keywords.add(tok);
+    }
+    for (const sec of entity.sections) {
+      for (const tok of sec.slug.split("-")) {
+        if (tok.length >= 4 && !STOP_WORDS.has(tok)) keywords.add(tok);
+      }
+    }
+
+    const matchedKw = [...keywords].filter((k) => promptWords.has(k));
+    if (matchedKw.length > 0) {
+      reasons.push(`task match (${matchedKw.slice(0, 2).join(", ")})`);
+    }
+
+    results.push({
+      entity,
+      matched: reasons.length > 0,
+      reasons,
+    });
+  }
+
+  return results.sort((a, b) => {
+    if (a.matched !== b.matched) return a.matched ? -1 : 1;
+    if (a.entity.kind !== b.entity.kind) return a.entity.kind === "knowledge" ? -1 : 1;
+    return a.entity.name.localeCompare(b.entity.name);
+  });
+}
+
 export function timeAgo(ts: number): string {
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
   if (s < 60) return `${s}s ago`;
@@ -73,6 +139,22 @@ export interface SeamCollision {
 
 const ACTIVE_SEAM_WINDOW_MS = 30 * 60 * 1000;
 
+const IGNORED_SEAM_PATTERNS = [
+  /^\.operon(\/|$)/i,
+  /^\.git(\/|$)/i,
+  /^\.cursor(\/|$)/i,
+  /^\.github\/copilot-instructions\.md$/i,
+  /^\.windsurf(\/|$)/i,
+  /^(?:.*\/)?(?:CLAUDE|AGENTS|GEMINI)\.md$/i,
+  /^(?:.*\/)?\.gitignore$/i,
+];
+
+/** Returns true for Operon/editor harness files and git ignore metadata that should never trigger seam collisions. */
+export function isIgnoredSeamPath(filePath: string): boolean {
+  const norm = filePath.replace(/\\/g, "/").replace(/^\.?\//, "");
+  return IGNORED_SEAM_PATTERNS.some((re) => re.test(norm));
+}
+
 function dirPrefix(p: string): string | null {
   const clean = p.replace(/^\.?\//, "").replace(/\/\*\*.*$/, "");
   const parts = clean.split("/").filter(Boolean);
@@ -89,11 +171,15 @@ export function detectSeamCollisions(
   remoteSessions: RemoteSession[],
   localSessionId?: string,
   now = Date.now(),
+  localAuthor?: string,
 ): { collisions: SeamCollision[]; activeTeammates: RemoteSession[] } {
+  const cleanLocalPaths = localPaths.filter((p) => !isIgnoredSeamPath(p));
   const activeTeammates = remoteSessions.filter(
     (s) =>
       s.status === "in-flight" &&
       (!localSessionId || s.sessionId !== localSessionId) &&
+      !(s.sessionId === "default" && localSessionId && localSessionId !== "default") &&
+      !(s.sessionId.startsWith("wal-") && localAuthor && s.author === localAuthor) &&
       now - s.updatedAt <= ACTIVE_SEAM_WINDOW_MS,
   );
 
@@ -106,14 +192,14 @@ export function detectSeamCollisions(
 
   const collisions: SeamCollision[] = [];
   for (const remote of activeTeammates) {
-    const rPaths = remote.touchedPaths ?? [];
+    const rPaths = (remote.touchedPaths ?? []).filter((p) => !isIgnoredSeamPath(p));
     if (!rPaths.length) continue;
 
     const overlapping = new Set<string>();
     const reasons = new Set<string>();
 
     for (const rp of rPaths) {
-      for (const lp of localPaths) {
+      for (const lp of cleanLocalPaths) {
         if (
           lp === rp ||
           minimatch(lp, rp, { dot: true, nocase: true }) ||

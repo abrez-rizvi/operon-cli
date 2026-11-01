@@ -47,12 +47,8 @@ export async function joinCommand(codeOrUrl: string): Promise<number> {
   seedProjectBasics(dir);
   const byCategory: Record<string, Set<string>> = { skill: new Set(), knowledge: new Set(), workflow: new Set(), tool: new Set() };
   for (const f of snap.files) {
-    if (f.path === INVARIANTS_FILE) continue;
+    if (f.path === INVARIANTS_FILE || f.path === MEMORY_FILE) continue;
     writeProjectFile(dir, f.path, f.content);
-    if (f.path === MEMORY_FILE) {
-      byCategory.knowledge.add("MEMORY.md");
-      continue;
-    }
     const item = (f.path.includes("/") ? f.path.split("/")[1] : f.path)?.replace(/\.[^.]+$/, "") ?? f.path;
     byCategory[f.category]?.add(item);
   }

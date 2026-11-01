@@ -9,6 +9,8 @@
  */
 
 import type * as auth from "../auth.js";
+import type * as entities from "../entities.js";
+import type * as events from "../events.js";
 import type * as knowledge from "../knowledge.js";
 import type * as memory from "../memory.js";
 import type * as projects from "../projects.js";
@@ -23,6 +25,8 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
+  entities: typeof entities;
+  events: typeof events;
   knowledge: typeof knowledge;
   memory: typeof memory;
   projects: typeof projects;

@@ -90,7 +90,7 @@ cli
 
 // Agent lifecycle
 cli.command("boot <prompt>", "Write .operon/BOOT.md with active workflow, skills, and invariants").action(run(bootCommand));
-cli.command("fetch <entity>", "Slice a skill/knowledge section: <entity>[:<heading>]").action(run(fetchCommand));
+cli.command("fetch [entity]", "Slice a skill/knowledge section (<entity>[:<heading>]) or list catalog").action(run(fetchCommand));
 cli
   .command("checkpoint <message>", "Append an okf:checkpoint block to .operon/MEMORY.md")
   .option("--close", "Close the current session")

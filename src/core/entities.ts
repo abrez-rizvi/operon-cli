@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { tableOfContents, type Heading } from "../tools/heading-parser.js";
 import { parseFrontmatter } from "./frontmatter.js";
 import { walk } from "./local-store.js";
 
@@ -9,26 +10,47 @@ export interface Entity {
   file: string; // absolute
   title: string;
   description: string;
+  tags: string[];
+  triggers: string[];
+  paths: string[];
+  sections: Heading[];
   data: Record<string, unknown>;
   body: string;
 }
 
-const RESERVED = new Set(["readme.md", "index.md"]);
+const RESERVED = new Set(["readme.md", "index.md", "memory.md", "boot.md"]);
+
+function toStringArray(val: unknown): string[] {
+  if (Array.isArray(val)) return val.map((x) => String(x).trim()).filter(Boolean);
+  if (typeof val === "string" && val.trim()) return [val.trim()];
+  return [];
+}
 
 function load(file: string, kind: Entity["kind"], fallbackName: string): Entity {
   const { data, body } = parseFrontmatter(fs.readFileSync(file, "utf8"));
+  const name = typeof data.name === "string" ? data.name : fallbackName;
+  const title = typeof data.title === "string" ? data.title : fallbackName;
+  const description = typeof data.description === "string" ? data.description : "";
+  const tags = toStringArray(data.tags);
+  const triggers = toStringArray(data.triggers);
+  const paths = toStringArray(data.paths);
+  const sections = tableOfContents(body).filter((h) => h.level >= 2);
   return {
-    name: typeof data.name === "string" ? data.name : fallbackName,
+    name,
     kind,
     file,
-    title: typeof data.title === "string" ? data.title : fallbackName,
-    description: typeof data.description === "string" ? data.description : "",
+    title,
+    description,
+    tags,
+    triggers,
+    paths,
+    sections,
     data,
     body,
   };
 }
 
-/** Lists skills, knowledge docs, and workflows in a project (or pack) directory. */
+/** Lists skills, knowledge docs, and workflows in a project (or pack) directory with indexed sections & triggers. */
 export function listEntities(dir: string): Entity[] {
   const out: Entity[] = [];
   const scan = (sub: string, kind: Entity["kind"], marker: string) => {
@@ -51,9 +73,10 @@ export function listEntities(dir: string): Entity[] {
 
 export function findEntity(dir: string, name: string): Entity | undefined {
   const all = listEntities(dir);
+  const target = name.toLowerCase();
   const order: Entity["kind"][] = ["skill", "knowledge", "workflow"];
   for (const kind of order) {
-    const hit = all.find((e) => e.kind === kind && e.name === name);
+    const hit = all.find((e) => e.kind === kind && e.name.toLowerCase() === target);
     if (hit) return hit;
   }
   return undefined;

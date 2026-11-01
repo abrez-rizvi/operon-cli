@@ -29,7 +29,33 @@ export default defineSchema({
     .index("by_project_and_path", ["projectId", "path"])
     .index("by_project", ["projectId"]),
 
-  // 3. Spatially-Scoped Atomic Invariants
+  // 3. Structured Knowledge, Skills, and Workflows Registry
+  entities: defineTable({
+    projectId: v.id("projects"),
+    kind: v.union(v.literal("skill"), v.literal("knowledge"), v.literal("workflow")),
+    name: v.string(), // e.g. "tdd", "architecture"
+    path: v.string(), // e.g. "skills/tdd/SKILL.md"
+    title: v.string(),
+    description: v.string(),
+    tags: v.array(v.string()),
+    triggers: v.array(v.string()),
+    paths: v.array(v.string()),
+    sections: v.array(
+      v.object({
+        slug: v.string(),
+        heading: v.string(),
+        level: v.number(),
+        content: v.string(),
+      }),
+    ),
+    content: v.string(),
+    updatedAt: v.number(),
+  })
+    .index("by_project", ["projectId"])
+    .index("by_project_and_kind_name", ["projectId", "kind", "name"])
+    .index("by_project_and_path", ["projectId", "path"]),
+
+  // 4. Spatially-Scoped Atomic Invariants
   invariants: defineTable({
     projectId: v.id("projects"),
     code: v.string(), // e.g. "AUTH-01"
@@ -43,7 +69,7 @@ export default defineSchema({
     .index("by_project", ["projectId"])
     .index("by_project_and_code", ["projectId", "code"]),
 
-  // 4. Continuous Sessions & In-Flight Seams (Write-Ahead Logging + Collision Detection)
+  // 5. Continuous Sessions & In-Flight Seams (Write-Ahead Logging + Collision Detection)
   sessions: defineTable({
     projectId: v.id("projects"),
     sessionId: v.string(),
@@ -65,7 +91,30 @@ export default defineSchema({
     .index("by_project_and_branch", ["projectId", "branch"])
     .index("by_project_and_session", ["projectId", "sessionId"]),
 
-  // 5. Flight Recorder Telemetry
+  // 6. Real-Time Reactive Event Bus (`operon watch`)
+  events: defineTable({
+    projectId: v.id("projects"),
+    type: v.union(
+      v.literal("checkpoint"),
+      v.literal("seam"),
+      v.literal("invariant_added"),
+      v.literal("invariant_removed"),
+      v.literal("entity_synced"),
+    ),
+    sessionId: v.string(),
+    author: v.string(),
+    branch: v.string(),
+    summary: v.string(),
+    code: v.optional(v.string()),
+    paths: v.optional(v.array(v.string())),
+    entityName: v.optional(v.string()),
+    entityKind: v.optional(v.string()),
+    timestamp: v.number(),
+  })
+    .index("by_project_and_timestamp", ["projectId", "timestamp"])
+    .index("by_project", ["projectId"]),
+
+  // 7. Flight Recorder Telemetry
   telemetry: defineTable({
     projectId: v.id("projects"),
     command: v.string(), // "verify", "boot", "clean"

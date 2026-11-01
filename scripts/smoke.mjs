@@ -91,6 +91,8 @@ const suites = {
     check("boot classifies feature-delivery workflow", /Workflow: Feature Delivery/.test(r.out), r.out);
     check("boot output stays compact (<2500 chars)", r.out.length < 2500, `${r.out.length} chars`);
 
+    r = s.op("fetch");
+    check("fetch without args prints structured knowledge & skills catalog with section slugs", r.code === 0 && /Knowledge & Skills Catalog/.test(r.out) && /sections: seam-definition, red-phase/.test(r.out), r.out);
     r = s.op("fetch", "tdd");
     check("fetch entity prints TOC", r.code === 0 && /red-phase/.test(r.out), r.out);
     r = s.op("fetch", "tdd:red-phase");
@@ -212,7 +214,7 @@ const suites = {
             const fmap = db.files.get(a.projectId);
             fmap.set(a.path, { path: a.path, content: a.content, category: a.category, updatedAt: Date.now() });
             value = a.path;
-          } else if (fnPath === "projects:getSnapshot") {
+          } else if (fnPath === "projects:getSnapshot" || fnPath === "events:subscribeFeed") {
             const p = [...db.projects.values()].find((x) => x.inviteCode === a.inviteCode);
             value = p
               ? {
@@ -220,6 +222,8 @@ const suites = {
                   name: p.name,
                   repoHash: p.repoHash,
                   inviteCode: p.inviteCode,
+                  events: [],
+                  entities: [],
                   files: [...db.files.get(p.projectId).values()],
                   invariants: [...db.invariants.get(p.projectId).values()],
                   sessions: [...db.sessions.get(p.projectId).values()],

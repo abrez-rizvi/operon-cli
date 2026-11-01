@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
-import path from "node:path";
 import { ConvexClient } from "convex/browser";
 import pc from "picocolors";
 import { printBanner } from "../core/banner.js";
@@ -19,10 +18,10 @@ import {
   writeProjectFile,
   type Project,
 } from "../core/local-store.js";
-import { detectSeamCollisions, type RemoteSession } from "../core/matching.js";
+import { detectSeamCollisions, isIgnoredSeamPath, type RemoteSession } from "../core/matching.js";
 import { parseMemoryFile } from "../core/memory-parser.js";
 import { ensureSession } from "../core/sessions.js";
-import { mergeMemoryContent, pushSeam, readRemoteSessions, writeRemoteSessions } from "../core/sync.js";
+import { pushSeam, readRemoteSessions, writeRemoteSessions } from "../core/sync.js";
 import type { Invariant } from "../types/okf.js";
 import { refreshBootFile } from "./boot.js";
 import { shareCommand } from "./share.js";
@@ -47,24 +46,39 @@ function currentChangedPaths(root: string, base: string): string[] {
   try {
     return changedFiles(root, base)
       .map((f) => f.path)
-      .filter((p) => !p.startsWith(".operon/"))
+      .filter((p) => !isIgnoredSeamPath(p))
       .sort();
   } catch {
     return [];
   }
 }
 
+export interface BusEventItem {
+  id: string;
+  type: "checkpoint" | "seam" | "invariant_added" | "invariant_removed" | "entity_synced";
+  sessionId: string;
+  author: string;
+  branch: string;
+  summary: string;
+  code?: string;
+  paths?: string[];
+  entityName?: string;
+  entityKind?: string;
+  timestamp: number;
+}
+
 export interface SnapshotPayload {
   projectId: string;
   name: string;
-  repoHash: string;
+  repoHash?: string;
   inviteCode: string;
-  files: { path: string; content: string; category: string; updatedAt: number }[];
+  events?: BusEventItem[];
+  files?: { path: string; content: string; category: string; updatedAt: number }[];
   invariants: Invariant[];
   sessions?: RemoteSession[];
 }
 
-/** Applies an incoming Convex snapshot to `.operon/`, logs live deltas, and refreshes `.operon/BOOT.md`. */
+/** Applies an incoming Convex Event Bus feed or snapshot to `.operon/`, logs live events, and refreshes `.operon/BOOT.md`. */
 export function applyIncomingSnapshot(
   project: Project,
   snap: SnapshotPayload,
@@ -77,16 +91,64 @@ export function applyIncomingSnapshot(
     invariantMap: Map<string, number>;
     sessionMap: Map<string, { updatedAt: number; lastCheckpoint: string; pathsKey: string }>;
     alertedCollisions: Set<string>;
+    seenEventIds?: Set<string>;
   },
 ): boolean {
   let changed = false;
+  const localAuthor = author(project.root);
+  const seenEvents = state.seenEventIds ?? new Set<string>();
+  state.seenEventIds = seenEvents;
 
-  // 1. Check incoming invariants
+  // 1. Stream typed events from the Convex Event Bus (`events` table) when present
+  const hasEventStream = Array.isArray(snap.events);
+  if (hasEventStream && snap.events) {
+    for (const ev of snap.events) {
+      if (seenEvents.has(ev.id)) continue;
+      seenEvents.add(ev.id);
+      if (!state.initialized) continue;
+      if (ev.sessionId === state.localSessionId) continue;
+      if ((ev.sessionId === "cli" || ev.sessionId === "memory" || ev.sessionId === "sync") && ev.author === localAuthor) {
+        continue;
+      }
+
+      if (ev.type === "invariant_added") {
+        logEvent(
+          pc.cyan("↓ [Event: Invariant]"),
+          `${pc.bold(ev.author)} published ${pc.yellow(`[${ev.code ?? "INV"}]`)} ${pc.dim(`(${(ev.paths ?? []).join(", ")})`)}`,
+          `"${ev.summary}"`,
+        );
+        changed = true;
+      } else if (ev.type === "invariant_removed") {
+        logEvent(pc.cyan("↓ [Event: Invariant Removed]"), `${pc.bold(ev.author)} removed [${ev.code ?? "INV"}]`);
+        changed = true;
+      } else if (ev.type === "checkpoint") {
+        logEvent(
+          pc.cyan("↓ [Event: Checkpoint]"),
+          `${pc.bold(ev.author)} ${pc.dim(`(${ev.branch})`)}: "${ev.summary}"`,
+        );
+        changed = true;
+      } else if (ev.type === "seam") {
+        const cleanPaths = (ev.paths ?? []).filter((p) => !isIgnoredSeamPath(p));
+        if (cleanPaths.length > 0) {
+          logEvent(
+            pc.cyan("↓ [Event: Seam]"),
+            `${pc.bold(ev.author)} ${pc.dim(`(${ev.branch})`)} touching: ${pc.underline(cleanPaths.join(", "))}`,
+          );
+          changed = true;
+        }
+      } else if (ev.type === "entity_synced") {
+        logEvent(pc.cyan("↓ [Event: Knowledge/Skill]"), `${pc.bold(ev.author)}: ${ev.summary}`);
+        changed = true;
+      }
+    }
+  }
+
+  // 2. Sync invariants to local cache (.operon/knowledge/invariants.yaml)
   for (const inv of snap.invariants) {
     const prevTs = state.invariantMap.get(inv.code);
     if (prevTs === undefined || inv.timestamp > prevTs) {
       state.invariantMap.set(inv.code, inv.timestamp);
-      if (state.initialized) {
+      if (state.initialized && !hasEventStream) {
         logEvent(
           pc.cyan("↓ [Teammate Invariant]"),
           `${pc.bold(inv.author)} logged ${pc.yellow(`[${inv.code}]`)} ${pc.dim(`(${inv.paths.join(", ")})`)}`,
@@ -98,35 +160,22 @@ export function applyIncomingSnapshot(
   }
   writeInvariants(project.dir, snap.invariants);
 
-  // 2. Merge MEMORY.md and sync other files
-  const localMem = readMemoryContent(project.dir);
-  for (const f of snap.files) {
-    if (f.path === INVARIANTS_FILE) continue;
-    if (f.path === MEMORY_FILE) {
-      const merged = mergeMemoryContent(f.content, localMem);
-      const mergedHash = sha256(merged);
-      if (merged !== localMem) {
-        state.fileHashes.set(MEMORY_FILE, mergedHash);
-        writeProjectFile(project.dir, MEMORY_FILE, merged);
-        changed = true;
-      } else {
-        state.fileHashes.set(MEMORY_FILE, sha256(localMem));
-      }
-      continue;
-    }
+  // 3. Sync non-memory files when included in payload
+  for (const f of snap.files ?? []) {
+    if (f.path === INVARIANTS_FILE || f.path === MEMORY_FILE) continue;
 
     const incomingHash = sha256(f.content);
     if (state.fileHashes.get(f.path) !== incomingHash) {
       state.fileHashes.set(f.path, incomingHash);
       writeProjectFile(project.dir, f.path, f.content);
-      if (state.initialized) {
+      if (state.initialized && !hasEventStream) {
         logEvent(pc.cyan("↓ [Teammate File]"), `Updated ${pc.bold(`.operon/${f.path}`)}`);
         changed = true;
       }
     }
   }
 
-  // 3. Process teammate sessions & in-flight seam collisions
+  // 4. Process teammate sessions & in-flight seam collisions
   const remoteSessions = snap.sessions ?? readRemoteSessions(project.dir);
   if (snap.sessions) {
     writeRemoteSessions(project.dir, snap.sessions);
@@ -134,7 +183,9 @@ export function applyIncomingSnapshot(
 
   for (const s of remoteSessions) {
     if (s.sessionId === state.localSessionId) continue;
-    const pathsKey = (s.touchedPaths ?? []).slice().sort().join(",");
+    if (s.sessionId.startsWith("wal-") && s.author === localAuthor) continue;
+    const cleanPaths = (s.touchedPaths ?? []).filter((p) => !isIgnoredSeamPath(p));
+    const pathsKey = cleanPaths.slice().sort().join(",");
     const prev = state.sessionMap.get(s.sessionId);
     state.sessionMap.set(s.sessionId, {
       updatedAt: s.updatedAt,
@@ -142,7 +193,7 @@ export function applyIncomingSnapshot(
       pathsKey,
     });
 
-    if (!state.initialized) continue;
+    if (!state.initialized || hasEventStream) continue;
 
     if (!prev || prev.lastCheckpoint !== s.lastCheckpoint) {
       logEvent(
@@ -154,7 +205,7 @@ export function applyIncomingSnapshot(
     if (pathsKey && (!prev || prev.pathsKey !== pathsKey)) {
       logEvent(
         pc.cyan("↓ [Teammate Seam]"),
-        `${pc.bold(s.author)} ${pc.dim(`(${s.branch})`)} is touching: ${pc.underline((s.touchedPaths ?? []).join(", "))}`,
+        `${pc.bold(s.author)} ${pc.dim(`(${s.branch})`)} is touching: ${pc.underline(cleanPaths.join(", "))}`,
       );
       changed = true;
     }
@@ -165,6 +216,8 @@ export function applyIncomingSnapshot(
     state.localTask,
     remoteSessions,
     state.localSessionId,
+    Date.now(),
+    localAuthor,
   );
   for (const c of collisions) {
     const key = `${c.session.sessionId}:${c.overlappingPaths.join(",")}`;
@@ -182,7 +235,7 @@ export function applyIncomingSnapshot(
   if (!state.initialized || changed) {
     refreshBootFile(project, state.localTask);
     if (changed && state.initialized) {
-      console.log(`          ${pc.green("✔")} Synced to ${pc.bold(".operon/MEMORY.md")} & refreshed ${pc.bold(".operon/BOOT.md")}`);
+      console.log(`          ${pc.green("✔")} Refreshed ${pc.bold(".operon/BOOT.md")} with teammate state`);
     }
   }
 
@@ -238,12 +291,16 @@ export async function watchCommand(opts: WatchOptions = {}): Promise<number> {
     invariantMap,
     sessionMap: new Map<string, { updatedAt: number; lastCheckpoint: string; pathsKey: string }>(),
     alertedCollisions: new Set<string>(),
+    seenEventIds: new Set<string>(),
   };
 
   const httpClient = createClient(url, 15000);
 
-  /** Pushes any modified local `.operon/` files and changed git seam paths to Convex. */
+  /** Converts local `.operon/MEMORY.md` blocks into typed Convex mutations, and syncs entity files & git seams. */
   const pushLocalChanges = async () => {
+    localPaths = currentChangedPaths(root, base);
+    state.localPaths = localPaths;
+
     // 1. Check `.operon/` files for local edits
     for (const f of listProjectFiles(dir)) {
       const h = sha256(f.content);
@@ -266,10 +323,21 @@ export async function watchCommand(opts: WatchOptions = {}): Promise<number> {
             knownLocalInvariants.add(code);
             invariantMap.set(code, inv.timestamp);
             logEvent(
-              pc.green("↑ [Local Invariant]"),
-              `Pushing ${pc.bold(`[${code}]`)} (${inv.paths.join(", ")})`,
+              pc.green("↑ [Event: Invariant]"),
+              `Publishing ${pc.bold(`[${code}]`)} (${inv.paths.join(", ")})`,
               `"${inv.rule}"`,
             );
+            await httpClient.mutation(api.knowledge.addInvariant, {
+              projectId: cloud.projectId as any,
+              projectToken: cloud.projectToken,
+              code,
+              trigger: inv.trigger,
+              rule: inv.rule,
+              reason: inv.reason,
+              paths: inv.paths,
+              author: inv.author || me,
+              timestamp: inv.timestamp,
+            });
           }
         }
 
@@ -277,23 +345,27 @@ export async function watchCommand(opts: WatchOptions = {}): Promise<number> {
           const key = `${cp.ts}:${cp.message}`;
           if (!knownLocalCheckpoints.has(key)) {
             knownLocalCheckpoints.add(key);
-            logEvent(pc.green("↑ [Local Checkpoint]"), `"${cp.message}"`);
+            logEvent(pc.green("↑ [Event: Checkpoint]"), `"${cp.message}"`);
+            await httpClient.mutation(api.sessions.checkpoint, {
+              projectId: cloud.projectId as any,
+              projectToken: cloud.projectToken,
+              sessionId: cp.session && !cp.session.startsWith("wal-") ? cp.session : session.sessionId,
+              branch: cp.branch || branch,
+              author: cp.author || me,
+              message: cp.message,
+              task: state.localTask,
+              touchedPaths: localPaths,
+              close: cp.status === "closed",
+            });
           }
         }
 
-        await httpClient.mutation(api.projects.syncFile, {
-          projectId: cloud.projectId as any,
-          projectToken: cloud.projectToken,
-          path: MEMORY_FILE,
-          content: f.content,
-          category: "knowledge",
-        });
         refreshBootFile(project, state.localTask);
         continue;
       }
 
       fileHashes.set(f.path, h);
-      logEvent(pc.green("↑ [Local File]"), `Pushing ${pc.bold(`.operon/${f.path}`)} to Convex`);
+      logEvent(pc.green("↑ [Event: Knowledge/Skill]"), `Indexing ${pc.bold(`.operon/${f.path}`)} in Convex`);
       await httpClient.mutation(api.projects.syncFile, {
         projectId: cloud.projectId as any,
         projectToken: cloud.projectToken,
@@ -305,14 +377,12 @@ export async function watchCommand(opts: WatchOptions = {}): Promise<number> {
     }
 
     // 2. Check if touched git seam paths changed
-    localPaths = currentChangedPaths(root, base);
-    state.localPaths = localPaths;
     const pathsKey = localPaths.join(",");
     if (pathsKey !== lastDeclaredPathsKey) {
       lastDeclaredPathsKey = pathsKey;
       if (localPaths.length > 0) {
         logEvent(
-          pc.green("↑ [Local Seam]"),
+          pc.green("↑ [Event: Seam]"),
           `Declaring in-flight paths (${localPaths.length}): ${pc.underline(localPaths.slice(0, 5).join(", "))}`,
         );
       }
@@ -328,20 +398,25 @@ export async function watchCommand(opts: WatchOptions = {}): Promise<number> {
 
   if (opts.once) {
     await pushLocalChanges();
-    const snap = await httpClient.query(api.projects.getSnapshot, { inviteCode: cloud.inviteCode });
-    if (snap) {
+    let feed = await httpClient
+      .query(api.events.subscribeFeed, { inviteCode: cloud.inviteCode, limit: 30 })
+      .catch(() => null);
+    if (!feed) {
+      feed = (await httpClient.query(api.projects.getSnapshot, { inviteCode: cloud.inviteCode })) as any;
+    }
+    if (feed) {
       state.initialized = true;
-      applyIncomingSnapshot(project, snap as unknown as SnapshotPayload, state);
+      applyIncomingSnapshot(project, feed as unknown as SnapshotPayload, state);
     }
     return 0;
   }
 
   await printBanner();
   console.log(
-    `${pc.green("●")} ${pc.bold("OPERON LIVE")} · ${pc.bold(project.config.name)} ${pc.cyan(`[${cloud.inviteCode}]`)} · branch ${pc.bold(branch)}`,
+    `${pc.green("●")} ${pc.bold("OPERON LIVE EVENT BUS")} · ${pc.bold(project.config.name)} ${pc.cyan(`[${cloud.inviteCode}]`)} · branch ${pc.bold(branch)}`,
   );
   console.log(
-    `${pc.dim("  Watching .operon/MEMORY.md, skills/, and git seam paths · Press Ctrl+C to stop")}\n`,
+    `${pc.dim("  Subscribed to Convex reactive events table + active seams · Press Ctrl+C to stop")}\n`,
   );
 
   // Initial seam & file push
@@ -351,20 +426,20 @@ export async function watchCommand(opts: WatchOptions = {}): Promise<number> {
     /* initial offline tolerated */
   }
 
-  // Subscribe to real-time updates over WebSocket via ConvexClient
+  // Subscribe to real-time updates over WebSocket via ConvexClient on the lightweight `events:subscribeFeed` query
   const liveClient = new ConvexClient(url);
   const unsubscribe = liveClient.onUpdate(
-    api.projects.getSnapshot,
-    { inviteCode: cloud.inviteCode },
-    (snap) => {
-      if (!snap) return;
+    api.events.subscribeFeed,
+    { inviteCode: cloud.inviteCode, limit: 30 },
+    (feed) => {
+      if (!feed) return;
       const firstConnect = !state.initialized;
-      applyIncomingSnapshot(project, snap as unknown as SnapshotPayload, state);
+      applyIncomingSnapshot(project, feed as unknown as SnapshotPayload, state);
       if (firstConnect) {
-        const activeCount = (snap.sessions ?? []).filter((s) => s.status === "in-flight").length;
+        const activeCount = (feed.sessions ?? []).filter((s) => s.status === "in-flight").length;
         logEvent(
           pc.green("● [Connected]"),
-          `WebSocket stream active · ${snap.invariants.length} invariant(s) · ${activeCount} in-flight session(s)`,
+          `Event bus active · ${feed.invariants.length} invariant(s) · ${feed.entities.length} skill/knowledge doc(s) · ${activeCount} in-flight session(s)`,
         );
       }
     },

@@ -15,6 +15,8 @@ export const BaseFrontmatter = z.looseObject({
 export const SkillFrontmatter = BaseFrontmatter.extend({
   type: z.literal("Skill"),
   tags: z.array(z.string()).optional(),
+  triggers: z.array(z.string()).optional(),
+  paths: z.array(z.string()).optional(),
 });
 
 export const WorkflowFrontmatter = BaseFrontmatter.extend({
@@ -26,6 +28,8 @@ export const WorkflowFrontmatter = BaseFrontmatter.extend({
 export const KnowledgeFrontmatter = BaseFrontmatter.extend({
   type: z.literal("Knowledge"),
   paths: z.array(z.string()).optional(),
+  triggers: z.array(z.string()).optional(),
+  tags: z.array(z.string()).optional(),
 });
 
 export const Invariant = z.object({

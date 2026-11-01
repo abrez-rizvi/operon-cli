@@ -123,6 +123,7 @@ export function listProjectFiles(dir: string): ProjectFile[] {
   }
   for (const cat of CATEGORY_DIRS) {
     for (const rel of walk(path.join(dir, cat))) {
+      if (`${cat}/${rel}` === INVARIANTS_FILE) continue;
       const buf = fs.readFileSync(path.join(dir, cat, rel));
       if (buf.subarray(0, 8000).includes(0)) continue; // skip binary
       files.push({ path: `${cat}/${rel}`, content: buf.toString("utf8"), category: dirToCategory[cat] });
@@ -180,17 +181,11 @@ export function readInvariants(dir: string): Invariant[] {
   return [...byCode.values()];
 }
 
-/** Syncs invariants into `.operon/MEMORY.md` (preserving existing checkpoints & notes). */
+/** Writes cloud-synced invariants into `.operon/knowledge/invariants.yaml` without mutating local `.operon/MEMORY.md`. */
 export function writeInvariants(dir: string, invariants: Invariant[]): void {
-  ensureMemoryFile(dir);
-  const current = readMemoryContent(dir);
-  const existingCodes = new Set(parseMemoryFile(current).invariants.map((i) => i.code.toUpperCase()));
-  for (const inv of invariants) {
-    if (!existingCodes.has(inv.code.toUpperCase())) {
-      appendMemoryBlock(dir, formatInvariantBlock(inv));
-      existingCodes.add(inv.code.toUpperCase());
-    }
-  }
+  const yamlFile = path.join(dir, INVARIANTS_FILE);
+  fs.mkdirSync(path.dirname(yamlFile), { recursive: true });
+  fs.writeFileSync(yamlFile, YAML.stringify({ okf: "0.3", type: "InvariantLedger", invariants }));
 }
 
 export function removeInvariantFromMemory(dir: string, code: string): boolean {

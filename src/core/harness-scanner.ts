@@ -49,9 +49,10 @@ export const START = "<!-- operon:start -->";
 export const END = "<!-- operon:end -->";
 
 export const TRAMPOLINE_BLOCK = `${START}
-## Operon
-1. At task start, run \`operon boot "<task>"\` and read \`.operon/BOOT.md\`.
-2. Every 2-3 turns (and when you find a project gotcha), append an OKF block to \`.operon/MEMORY.md\`.
+## Operon (Real-Time Multi-Agent Bridge over Convex)
+Operon connects you live to your teammates' AI agents across machines. \`.operon/BOOT.md\` is your read-only live feed of their invariants, checkpoints, and in-flight file edits. Do not waste turns running \`operon --help\` or inspecting internal files.
+1. At task start (and when resuming a turn), run \`operon boot "<task>"\` and read \`.operon/BOOT.md\`.
+2. Every 2-3 turns, broadcast progress with \`operon checkpoint "<summary>"\` and record contracts/gotchas with \`operon remember "[scope] <rule>"\` (or append OKF blocks to \`.operon/MEMORY.md\`).
 3. Before finishing, run \`operon verify\` (must exit 0).
 ${END}`;
 

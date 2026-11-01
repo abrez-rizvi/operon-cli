@@ -1,9 +1,8 @@
 import pc from "picocolors";
 import { mutateWithOutbox } from "../core/convex-client.js";
 import { author } from "../core/git.js";
-import { appendMemoryBlock, readInvariants, requireProject } from "../core/local-store.js";
+import { appendMemoryBlock, readInvariants, requireProject, writeInvariants } from "../core/local-store.js";
 import { formatInvariantBlock } from "../core/memory-parser.js";
-import { pushMemoryFile } from "../core/sync.js";
 import type { Invariant } from "../types/okf.js";
 
 export interface RememberOptions {
@@ -70,10 +69,10 @@ export async function rememberCommand(gotcha: string, opts: RememberOptions): Pr
   const existing = readInvariants(project.dir);
   const inv = buildInvariant(gotcha, existing, author(project.root), opts);
   appendMemoryBlock(project.dir, formatInvariantBlock(inv));
+  writeInvariants(project.dir, [...existing.filter((i) => i.code !== inv.code), inv]);
 
   let synced = false;
   if (project.config.cloud) {
-    await pushMemoryFile(project);
     synced = await mutateWithOutbox(project, "knowledge:addInvariant", {
       projectId: project.config.cloud.projectId,
       projectToken: project.config.cloud.projectToken,
