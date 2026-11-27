@@ -67,8 +67,14 @@ export function loadProject(cwd = process.cwd()): Project | null {
   const dir = projectDirFor(root);
   const cfgPath = path.join(dir, "config.json");
   if (!fs.existsSync(cfgPath)) return null;
-  const config = ProjectConfig.parse(JSON.parse(fs.readFileSync(cfgPath, "utf8")));
-  return { root, key: config.key || projectKey(root), dir, config };
+  try {
+    const parsed = ProjectConfig.safeParse(JSON.parse(fs.readFileSync(cfgPath, "utf8")));
+    if (!parsed.success) return null;
+    const config = parsed.data;
+    return { root, key: config.key || projectKey(root), dir, config };
+  } catch {
+    return null;
+  }
 }
 
 export function requireProject(cwd = process.cwd()): Project {

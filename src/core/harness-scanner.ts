@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { addLocalExcludes, isTracked } from "./git.js";
+import { addLocalExcludes, isTracked, removeLocalExcludes } from "./git.js";
 import { expandHome, userHome } from "./paths.js";
 
 export interface HarnessTarget {
@@ -109,4 +109,157 @@ export function armLocalHarnesses(repoRoot: string): ArmResult[] {
   }
   addLocalExcludes(repoRoot, ["/.operon/", ".operon/", ...excludes]);
   return results;
+}
+
+export interface DisarmResult {
+  name: string;
+  file: string;
+  status: "disarmed" | "removed" | "unchanged" | "not_found";
+  note?: string;
+}
+
+/**
+ * Removes an Operon trampoline block from file content.
+ * Matches `<!-- operon:start --> ... <!-- operon:end -->` or the un-commented Operon header block.
+ * Preserves surrounding user instructions and line endings.
+ */
+export function removeBlock(content: string): { content: string; removed: boolean } {
+  const eol = content.includes("\r\n") ? "\r\n" : "\n";
+  const startTagPattern = /<!--\s*operon:start\s*-->/i;
+  const endTagPattern = /<!--\s*operon:end\s*-->/i;
+
+  let updated = content;
+  let removed = false;
+
+  if (startTagPattern.test(content) && endTagPattern.test(content)) {
+    const re = /\r?\n?<!--\s*operon:start\s*-->[\s\S]*?<!--\s*operon:end\s*-->\r?\n?/gi;
+    updated = content.replace(re, "");
+    removed = true;
+  } else {
+    const fallbackRe =
+      /\r?\n?##\s*Operon\s*\(Real-Time Multi-Agent Bridge over Convex\)[\s\S]*?3\.\s*Before finishing,\s*run\s*`operon verify`[^\r\n]*\r?\n?/gi;
+    if (fallbackRe.test(content)) {
+      updated = content.replace(fallbackRe, "");
+      removed = true;
+    }
+  }
+
+  if (!removed) {
+    return { content, removed: false };
+  }
+
+  const trimmed = updated.trim();
+  if (!trimmed) {
+    return { content: "", removed: true };
+  }
+
+  const cleaned = trimmed.replace(/(?:\r?\n){3,}/g, `${eol}${eol}`);
+  return { content: cleaned + eol, removed: true };
+}
+
+/** Disarms a specific harness file, stripping Operon instructions or deleting owned files. */
+export function disarmFile(file: string, opts: { name?: string; ownsFile?: boolean } = {}): DisarmResult {
+  const name = opts.name ?? path.basename(file);
+  if (!exists(file)) {
+    return { name, file, status: "not_found" };
+  }
+
+  const content = fs.readFileSync(file, "utf8");
+
+  if (opts.ownsFile) {
+    const { content: remaining, removed } = removeBlock(content);
+    const hasOtherContent = remaining.replace(/---[\s\S]*?---/, "").trim().length > 0;
+    if (!hasOtherContent || removed) {
+      try {
+        fs.unlinkSync(file);
+        const parent = path.dirname(file);
+        if (exists(parent) && fs.readdirSync(parent).length === 0) {
+          fs.rmdirSync(parent);
+          const grandParent = path.dirname(parent);
+          if (exists(grandParent) && fs.readdirSync(grandParent).length === 0) {
+            fs.rmdirSync(grandParent);
+          }
+        }
+      } catch {
+        /* ignore cleanup error */
+      }
+      return { name, file, status: "removed", note: "deleted Operon rule file" };
+    }
+    fs.writeFileSync(file, remaining);
+    return { name, file, status: "disarmed" };
+  }
+
+  const { content: updated, removed } = removeBlock(content);
+  if (!removed) {
+    return { name, file, status: "unchanged", note: "no Operon instructions found" };
+  }
+
+  if (updated === "") {
+    try {
+      fs.unlinkSync(file);
+      return { name, file, status: "removed", note: "file was empty after removing Operon instructions" };
+    } catch {
+      fs.writeFileSync(file, "");
+      return { name, file, status: "disarmed" };
+    }
+  }
+
+  fs.writeFileSync(file, updated);
+  return { name, file, status: "disarmed" };
+}
+
+export const GLOBAL_CANDIDATES = [
+  { name: "Codex / OpenCode", configPath: "~/.codex/AGENTS.md" },
+  { name: "Claude Code", configPath: "~/.claude/CLAUDE.md" },
+  { name: "Antigravity / Gemini", configPath: "~/.gemini/GEMINI.md" },
+  { name: "Windsurf", configPath: "~/.codeium/windsurf/memories/global_rules.md" },
+  { name: "User AGENTS.md", configPath: "~/AGENTS.md" },
+  { name: "User .cursorrules", configPath: "~/.cursorrules" },
+];
+
+export function disarmGlobalHarnesses(): DisarmResult[] {
+  const results: DisarmResult[] = [];
+  for (const t of GLOBAL_CANDIDATES) {
+    const file = expandHome(t.configPath);
+    if (!exists(file)) continue;
+    const res = disarmFile(file, { name: t.name });
+    if (res.status === "disarmed" || res.status === "removed") {
+      results.push(res);
+    }
+  }
+  return results;
+}
+
+export const LOCAL_CANDIDATES = [
+  { name: "AGENTS.md", configPath: "AGENTS.md" },
+  { name: "CLAUDE.md", configPath: "CLAUDE.md" },
+  { name: "Cursor Rule", configPath: ".cursor/rules/operon.mdc", ownsFile: true },
+  { name: "GitHub Copilot", configPath: ".github/copilot-instructions.md" },
+  { name: "GEMINI.md", configPath: "GEMINI.md" },
+  { name: "Windsurf Rules", configPath: ".windsurfrules" },
+  { name: "Cursor Rules", configPath: ".cursorrules" },
+];
+
+export function disarmLocalHarnesses(repoRoot: string): DisarmResult[] {
+  const results: DisarmResult[] = [];
+  const cleanedPaths: string[] = [];
+  for (const t of LOCAL_CANDIDATES) {
+    const file = path.join(repoRoot, t.configPath);
+    if (!exists(file)) continue;
+    const res = disarmFile(file, { name: t.name, ownsFile: t.ownsFile });
+    if (res.status === "disarmed" || res.status === "removed") {
+      results.push(res);
+      cleanedPaths.push(`/${t.configPath}`);
+    }
+  }
+  if (cleanedPaths.length) {
+    removeLocalExcludes(repoRoot, cleanedPaths);
+  }
+  return results;
+}
+
+export function disarmPath(targetPath: string, repoRoot = process.cwd()): DisarmResult {
+  const file = targetPath.startsWith("~/") ? expandHome(targetPath) : path.resolve(repoRoot, targetPath);
+  const ownsFile = file.endsWith(".cursor/rules/operon.mdc") || file.endsWith("operon.mdc");
+  return disarmFile(file, { name: path.basename(file), ownsFile });
 }

@@ -4,7 +4,6 @@ import pc from "picocolors";
 import { printBanner } from "../core/banner.js";
 import { listEntities } from "../core/entities.js";
 import { workspaceRoot } from "../core/git.js";
-import { armGlobalHarnesses } from "../core/harness-scanner.js";
 import { loadProject, readInvariants, readMemoryCheckpoints } from "../core/local-store.js";
 import { copyEntity, ensureDefaultPack, getAllPackItems } from "../core/packs.js";
 import { isInteractive } from "../core/ui.js";
@@ -45,8 +44,7 @@ export async function statusCommand(): Promise<number> {
 export async function guidedCommand(): Promise<number> {
   await printBanner();
 
-  // Quietly ensure global editor hooks & default pack exist
-  armGlobalHarnesses();
+  // Ensure default pack library is ready
   ensureDefaultPack();
 
   const root = workspaceRoot();

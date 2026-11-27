@@ -19,7 +19,6 @@ import {
   type Project,
 } from "../core/local-store.js";
 import { detectSeamCollisions, isIgnoredSeamPath, type RemoteSession } from "../core/matching.js";
-import { persistInvariantToMeko } from "../core/meko-client.js";
 import { parseMemoryFile } from "../core/memory-parser.js";
 import { ensureSession } from "../core/sessions.js";
 import { pushSeam, readRemoteSessions, writeRemoteSessions } from "../core/sync.js";
@@ -339,7 +338,6 @@ export async function watchCommand(opts: WatchOptions = {}): Promise<number> {
               author: inv.author || me,
               timestamp: inv.timestamp,
             });
-            void persistInvariantToMeko(project, inv, session.sessionId);
           }
         }
 

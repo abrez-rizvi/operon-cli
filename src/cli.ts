@@ -5,6 +5,7 @@ import { allowCommand } from "./commands/allow.js";
 import { bootCommand } from "./commands/boot.js";
 import { checkpointCommand } from "./commands/checkpoint.js";
 import { cleanCommand } from "./commands/clean.js";
+import { disarmCommand } from "./commands/disarm.js";
 import { fetchCommand } from "./commands/fetch.js";
 import { forgetCommand } from "./commands/forget.js";
 import { guidedCommand, statusCommand } from "./commands/guided.js";
@@ -49,8 +50,16 @@ cli.command("status", "Show current .operon/ project status, invite code, and me
 cli
   .command("setup", "Scan installed AI harnesses, arm global trampolines, seed the pack library")
   .option("-y, --yes", "Accept defaults without interactive prompts")
-  .option("--reset", "Reset cloud and Meko endpoints to local defaults")
+  .option("--reset", "Reset saved Convex cloud endpoint to local defaults")
   .action(run(setupCommand));
+
+cli
+  .command("disarm [target]", "Remove Operon instructions from agent files (AGENTS.md, CLAUDE.md, Cursor rules, etc.)")
+  .alias("unarm")
+  .option("-g, --global", "Disarm global harness files (~/.codex/AGENTS.md, ~/.claude/CLAUDE.md, etc.)")
+  .option("-l, --local", "Disarm local workspace agent files only")
+  .option("-a, --all", "Disarm both local and global agent files")
+  .action(run(disarmCommand));
 
 cli
   .command("add <source>", "Import skills from a GitHub URL or local directory")
@@ -92,7 +101,7 @@ cli
 // Agent lifecycle
 cli
   .command("boot <prompt>", "Write .operon/BOOT.md with active workflow, skills, and invariants")
-  .option("--semantic", "Force L2 Meko/YugabyteDB semantic memory recall even when L1 hits exist")
+  .option("--semantic", "Force Convex persistent full-text search recall even when local cache hits exist")
   .action(run(bootCommand));
 cli.command("fetch [entity]", "Slice a skill/knowledge section (<entity>[:<heading>]) or list catalog").action(run(fetchCommand));
 cli
@@ -116,7 +125,7 @@ cli.command("forget <code>", "Remove an invariant by code (e.g. AUTH-01)").actio
 cli.command("validate [path]", "Validate OKF v0.3 compliance across .operon/ and MEMORY.md").action(run(validateCommand));
 
 cli.help();
-cli.version("0.2.0");
+cli.version("0.3.0");
 
 cli.addEventListener("command:*", () => {
   console.error(pc.red(`operon: unknown command "${cli.args.join(" ")}". See \`operon --help\`.`));

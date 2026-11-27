@@ -23,6 +23,76 @@ export const listInvariants = query({
   },
 });
 
+/**
+ * Full-text and multi-field search across project invariants (`operon boot` L2 persistent recall).
+ * Combines Convex full-text search index (`search_rule`) with token matching across code, reason, trigger, and paths.
+ */
+export const searchInvariants = query({
+  args: {
+    projectId: v.id("projects"),
+    query: v.string(),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, { projectId, query: searchQuery, limit }) => {
+    const trimmed = searchQuery.trim();
+    if (!trimmed) return [];
+    const maxLimit = Math.max(1, Math.min(limit ?? 10, 50));
+
+    const ftsHits = await ctx.db
+      .query("invariants")
+      .withSearchIndex("search_rule", (q) => q.search("rule", trimmed).eq("projectId", projectId))
+      .take(maxLimit);
+
+    const seen = new Set<string>();
+    const results = ftsHits.map((r) => {
+      seen.add(r.code);
+      return {
+        code: r.code,
+        trigger: r.trigger,
+        rule: r.rule,
+        reason: r.reason,
+        paths: r.paths,
+        author: r.author,
+        timestamp: r.timestamp,
+      };
+    });
+
+    if (results.length < maxLimit) {
+      const tokens = trimmed
+        .toLowerCase()
+        .split(/[^a-z0-9_-]+/)
+        .filter((t) => t.length >= 3);
+
+      if (tokens.length > 0) {
+        const allRows = await ctx.db
+          .query("invariants")
+          .withIndex("by_project", (q) => q.eq("projectId", projectId))
+          .collect();
+
+        for (const r of allRows) {
+          if (seen.has(r.code)) continue;
+          const haystack = [r.code, r.rule, r.reason, r.trigger, ...r.paths].join(" ").toLowerCase();
+          if (tokens.some((tok) => haystack.includes(tok))) {
+            seen.add(r.code);
+            results.push({
+              code: r.code,
+              trigger: r.trigger,
+              rule: r.rule,
+              reason: r.reason,
+              paths: r.paths,
+              author: r.author,
+              timestamp: r.timestamp,
+            });
+            if (results.length >= maxLimit) break;
+          }
+        }
+      }
+    }
+
+    return results;
+  },
+});
+
 /** Adds or updates a spatially-scoped invariant (`operon remember`) and emits an `invariant_added` event. */
 export const addInvariant = mutation({
   args: {

@@ -2,18 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { listEntities } from "./entities.js";
 import { copyDir, ensureMemoryFile, POLICY_FILE, walk } from "./local-store.js";
-import { HARDCODED_DEFAULT_PACK_DIR, packsDir, templatesDir, toPosix } from "./paths.js";
+import { packsDir, templatesDir, toPosix } from "./paths.js";
 
 export const DEFAULT_PACK = "default";
 
-/** Resolves the default pack source directory (hardcoded D:\MAIN\operon with fallback to bundled templates). */
+/** Resolves the default pack source directory from bundled templates. */
 export function defaultPackSource(): string {
-  if (process.env.OPERON_TEMPLATES_DIR && fs.existsSync(process.env.OPERON_TEMPLATES_DIR)) {
-    return process.env.OPERON_TEMPLATES_DIR;
-  }
-  if (fs.existsSync(HARDCODED_DEFAULT_PACK_DIR)) {
-    return HARDCODED_DEFAULT_PACK_DIR;
-  }
   return templatesDir();
 }
 

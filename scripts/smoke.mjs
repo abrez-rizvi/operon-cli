@@ -104,6 +104,22 @@ const suites = {
     check("checkpoint exits 0", r.code === 0, r.out);
     r = s.op("boot", "fix login redirect");
     check("boot resumes session with last checkpoint", /Resumed Session/.test(r.out) && /failing test for redirect/.test(r.out), r.out);
+
+    // Test operon disarm on local AGENTS.md and global harnesses
+    s.write("AGENTS.md", "# Project Guidelines\n\n<!-- operon:start -->\n## Operon\n<!-- operon:end -->\n");
+    r = s.op("disarm", "AGENTS.md");
+    check(
+      "disarm AGENTS.md strips Operon block and keeps user rules",
+      r.code === 0 && fs.readFileSync(path.join(s.repo, "AGENTS.md"), "utf8") === "# Project Guidelines\n",
+      r.out,
+    );
+
+    r = s.op("disarm", "--all");
+    check(
+      "disarm --all removes Cursor rule and unlinks empty global CLAUDE.md",
+      r.code === 0 && !fs.existsSync(path.join(s.repo, ".cursor/rules/operon.mdc")) && !fs.existsSync(claude),
+      r.out,
+    );
   },
 
   async phase2() {
@@ -182,23 +198,13 @@ const suites = {
   },
 
   async phase3() {
-    // Start a local HTTP server speaking both ConvexHttpClient (/api/query, /api/mutation) and Meko MCP JSON-RPC 2.0 (/mcp)
+    // Start a local HTTP server speaking ConvexHttpClient (/api/query, /api/mutation)
     const db = {
       projects: new Map(),
       files: new Map(),
       invariants: new Map(),
       sessions: new Map(),
       telemetry: [],
-      mekoMemories: [
-        {
-          id: "meko-seed-1",
-          memory: "Nginx proxy requires proxy_read_timeout 3600s for staging websockets",
-          score: 0.84,
-          agent_id: "cursor:infra",
-          created_at: "2026-10-31T08:14:22Z",
-        },
-      ],
-      mekoSimulateQuotaExceeded: false,
     };
     const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
     const server = http.createServer((req, res) => {
@@ -206,60 +212,6 @@ const suites = {
       req.on("data", (c) => (body += c));
       req.on("end", () => {
         try {
-          if (req.url === "/mcp") {
-            if (db.mekoSimulateQuotaExceeded) {
-              res.writeHead(429, { "Content-Type": "application/json" });
-              res.end(
-                JSON.stringify({
-                  jsonrpc: "2.0",
-                  id: 1,
-                  error: { code: -32000, message: "Rate limit exceeded: 1000 query lifetime quota reached" },
-                }),
-              );
-              return;
-            }
-            const rpc = JSON.parse(body || "{}");
-            const toolName = rpc?.params?.name;
-            const toolArgs = rpc?.params?.arguments || {};
-            if (toolName === "memory_add") {
-              const entry = {
-                id: `meko-${db.mekoMemories.length + 1}`,
-                memory: toolArgs.text,
-                event: "ADD",
-                score: 0.91,
-                agent_id: toolArgs.agent_id || "operon:cli",
-              };
-              db.mekoMemories.push(entry);
-              res.writeHead(200, { "Content-Type": "application/json" });
-              res.end(
-                JSON.stringify({
-                  jsonrpc: "2.0",
-                  id: rpc.id ?? 1,
-                  result: { content: [{ type: "text", text: JSON.stringify({ results: [entry] }) }] },
-                }),
-              );
-              return;
-            }
-            if (toolName === "memory_search") {
-              const qWords = String(toolArgs.query || "")
-                .toLowerCase()
-                .split(/\W+/)
-                .filter((w) => w.length >= 4);
-              const hits = db.mekoMemories.filter((m) =>
-                qWords.some((w) => m.memory.toLowerCase().includes(w)),
-              );
-              res.writeHead(200, { "Content-Type": "application/json" });
-              res.end(
-                JSON.stringify({
-                  jsonrpc: "2.0",
-                  id: rpc.id ?? 2,
-                  result: { content: [{ type: "text", text: JSON.stringify({ results: hits }) }] },
-                }),
-              );
-              return;
-            }
-          }
-
           const { path: fnPath, args } = JSON.parse(body || "{}");
           const a = (args && args[0]) || {};
           let value = null;
@@ -310,6 +262,20 @@ const suites = {
           } else if (fnPath === "knowledge:removeInvariant") {
             const removed = db.invariants.get(a.projectId).delete(a.code);
             value = { removed };
+          } else if (fnPath === "knowledge:searchInvariants") {
+            const tokens = String(a.query || "")
+              .toLowerCase()
+              .split(/[^a-z0-9_-]+/)
+              .filter((t) => t.length >= 3);
+            const allInvs = [...(db.invariants.get(a.projectId)?.values() ?? [])];
+            value = tokens.length
+              ? allInvs.filter((inv) => {
+                  const hay = [inv.code, inv.rule, inv.reason, inv.trigger, ...(inv.paths || [])]
+                    .join(" ")
+                    .toLowerCase();
+                  return tokens.some((tok) => hay.includes(tok));
+                })
+              : [];
           } else if (fnPath === "sessions:checkpoint") {
             const prev = db.sessions.get(a.projectId).get(a.sessionId) || {};
             db.sessions.get(a.projectId).set(a.sessionId, {
@@ -362,10 +328,6 @@ const suites = {
       const bob = sandbox("bob");
       alice.env.OPERON_CONVEX_URL = convexUrl;
       bob.env.OPERON_CONVEX_URL = convexUrl;
-      alice.env.OPERON_MEKO_URL = `${convexUrl}/mcp`;
-      bob.env.OPERON_MEKO_URL = `${convexUrl}/mcp`;
-      alice.env.OPERON_MEKO_TOKEN = "mko_tkn_smoke_test";
-      bob.env.OPERON_MEKO_TOKEN = "mko_tkn_smoke_test";
 
       for (const dev of [alice, bob]) {
         dev.write("src/auth/token.ts", "export const verify = () => true;\n");
@@ -390,11 +352,11 @@ const suites = {
         r.out,
       );
 
-      // Alice records a gotcha & a WAL checkpoint (writes to Convex L1 + Meko/YugabyteDB L2)
+      // Alice records a gotcha & a WAL checkpoint (writes to local .operon/ + Convex)
       r = await alice.opAsync("remember", "[auth] Token expiry must be in seconds", "--reason", "JWT verifier expects Unix seconds");
       check(
-        "Alice remember records AUTH-01 and syncs to Convex (L1) + Meko/YugabyteDB (L2)",
-        r.code === 0 && /\[AUTH-01\]/.test(r.out) && /synced to Convex/.test(r.out) && /Meko\/YugabyteDB \(L2\)/.test(r.out),
+        "Alice remember records AUTH-01 and syncs to Convex",
+        r.code === 0 && /\[AUTH-01\]/.test(r.out) && /synced to Convex/.test(r.out),
         r.out,
       );
 
@@ -409,19 +371,13 @@ const suites = {
         r.out,
       );
 
-      // L1 Cache Miss -> L2 Meko Semantic Read-Through & Promotion to Convex L1!
-      r = await bob.opAsync("boot", "fix websocket connection drops in staging");
+      // Local regex miss -> Convex persistent full-text/token search recall (`knowledge:searchInvariants`)!
+      r = await bob.opAsync("boot", "verify JWT verifier Unix seconds handling");
       check(
-        "Bob boot on L1 miss queries Meko L2 memory_search, recalls [MEKO-01], and promotes it into Convex L1",
-        r.code === 0 && /\[MEKO-01\] Nginx proxy requires proxy_read_timeout 3600s/.test(r.out) && /Meko\/YugabyteDB L2/.test(r.out),
+        "Bob boot on local trigger miss queries Convex persistent search and recalls [AUTH-01]",
+        r.code === 0 && /\[AUTH-01\] Token expiry must be in seconds/.test(r.out) && /convex search/.test(r.out),
         r.out,
       );
-
-      // Verify Meko 429 quota exceeded fallback is 100% graceful and never blocks CLI
-      db.mekoSimulateQuotaExceeded = true;
-      r = await alice.opAsync("boot", "investigate uncached payment webhook");
-      check("Meko 429 quota limit degrades gracefully to Convex L1 with zero errors", r.code === 0, r.out);
-      db.mekoSimulateQuotaExceeded = false;
 
       // In-flight seam collision: Alice modifies src/auth/token.ts and runs watch --once, Bob also touches src/auth/token.ts and runs watch --once
       alice.write("src/auth/token.ts", "export const verify = (expSec: number) => expSec > 0;\n");

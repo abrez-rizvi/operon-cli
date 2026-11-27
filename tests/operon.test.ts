@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
@@ -24,16 +26,13 @@ import {
   matchEntities,
   matchInvariants,
 } from "../src/core/matching.js";
-import {
-  formatInvariantForMeko,
-  parseMekoHitToInvariant,
-  toConversationUuid,
-} from "../src/core/meko-client.js";
 import { formatCheckpointBlock, formatInvariantBlock, parseMemoryFile } from "../src/core/memory-parser.js";
 import { templatesDir } from "../src/core/paths.js";
 import { extractSection, tableOfContents } from "../src/tools/heading-parser.js";
 import { validateOkf } from "../src/tools/okf-validator.js";
 import { getAllPackItems } from "../src/core/packs.js";
+import { ProjectConfig } from "../src/types/config.js";
+import { disarmFile, removeBlock, TRAMPOLINE_BLOCK, upsertBlock } from "../src/core/harness-scanner.js";
 
 const modules: Record<string, () => Promise<any>> = {
   "../convex/_generated/api.ts": async () => apiMod,
@@ -221,39 +220,80 @@ describe("Operon core & tools", () => {
     expect(ranked[0].matched).toBe(true);
   });
 
-  it("formats and parses Meko/YugabyteDB L2 semantic memories and deterministic conversation UUIDs", () => {
-    const uuid = toConversationUuid("57dbb8f9");
-    expect(uuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-
-    const inv = buildInvariant("[auth] Token validation requires timingSafeEqual", [], "alice@acme.com", {
-      reason: "Prevents timing side-channel",
-    });
-    const text = formatInvariantForMeko(inv);
-    expect(text).toContain("[AUTH-01]");
-    expect(text).toContain("timingSafeEqual");
-
-    const roundTrip = parseMekoHitToInvariant(
-      { id: "m1", memory: text, score: 0.88, agent_id: "operon:core" },
-      [],
-      "check auth token",
-    );
-    expect(roundTrip.code).toBe("AUTH-01");
-    expect(roundTrip.rule).toBe("Token validation requires timingSafeEqual");
-    expect(roundTrip.reason).toContain("Meko L2 (score 0.88)");
-
-    const crossProject = parseMekoHitToInvariant(
-      {
-        id: "m2",
-        memory: "Nginx proxy requires proxy_read_timeout 3600s for staging websockets",
-        score: 0.79,
-        agent_id: "cursor:infra",
+  it("validates ProjectConfig schema and strips unknown legacy fields cleanly", () => {
+    const parsed = ProjectConfig.parse({
+      version: 1,
+      name: "operon",
+      key: "abc12345",
+      repoRoot: "/tmp/repo",
+      remote: null,
+      createdAt: 1730000000000,
+      cloud: {
+        url: "https://demo.convex.cloud",
+        projectId: "proj_1",
+        inviteCode: "operon-1234567890",
+        projectToken: "opt_secret",
       },
-      [roundTrip],
-      "fix websocket connection drops in staging",
-    );
-    expect(crossProject.code).toBe("MEKO-01");
-    expect(crossProject.rule).toContain("proxy_read_timeout 3600s");
-    expect(crossProject.reason).toContain("Recalled from Meko/YugabyteDB L2 (score 0.79)");
+      legacyExtraField: { ignored: true },
+    });
+    expect(parsed.name).toBe("operon");
+    expect(parsed.cloud?.inviteCode).toBe("operon-1234567890");
+    expect("legacyExtraField" in parsed).toBe(false);
+  });
+
+  it("removes Operon trampoline block cleanly while preserving user instructions", () => {
+    const original = "# Project Rules\n\nAlways use TypeScript strict mode.\n";
+    const armed = upsertBlock(original);
+    expect(armed).toContain("<!-- operon:start -->");
+    expect(armed).toContain("Always use TypeScript strict mode.");
+
+    const { content: disarmed, removed } = removeBlock(armed);
+    expect(removed).toBe(true);
+    expect(disarmed).toBe(original);
+    expect(disarmed).not.toContain("operon:start");
+
+    // File with only Operon block produces empty string
+    const onlyOperon = TRAMPOLINE_BLOCK;
+    const resOnly = removeBlock(onlyOperon);
+    expect(resOnly.removed).toBe(true);
+    expect(resOnly.content).toBe("");
+
+    // File without Operon block is untouched
+    const untracked = "# Custom Rules\n";
+    const resNone = removeBlock(untracked);
+    expect(resNone.removed).toBe(false);
+    expect(resNone.content).toBe(untracked);
+  });
+
+  it("disarms target files, unlinks empty/owned files, and updates mixed files", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "operon-disarm-test-"));
+    try {
+      // 1. Mixed AGENTS.md: preserves user instructions
+      const mixedAgents = path.join(tmpDir, "AGENTS.md");
+      fs.writeFileSync(mixedAgents, upsertBlock("# User Agent Rules\n\nFollow styleguide.\n"));
+      const resMixed = disarmFile(mixedAgents);
+      expect(resMixed.status).toBe("disarmed");
+      expect(fs.existsSync(mixedAgents)).toBe(true);
+      expect(fs.readFileSync(mixedAgents, "utf8")).toBe("# User Agent Rules\n\nFollow styleguide.\n");
+
+      // 2. Pure Operon AGENTS.md: deleted cleanly
+      const pureAgents = path.join(tmpDir, "PURE_AGENTS.md");
+      fs.writeFileSync(pureAgents, TRAMPOLINE_BLOCK);
+      const resPure = disarmFile(pureAgents);
+      expect(resPure.status).toBe("removed");
+      expect(fs.existsSync(pureAgents)).toBe(false);
+
+      // 3. Owned Cursor rule: deleted cleanly
+      const cursorDir = path.join(tmpDir, ".cursor/rules");
+      fs.mkdirSync(cursorDir, { recursive: true });
+      const cursorRule = path.join(cursorDir, "operon.mdc");
+      fs.writeFileSync(cursorRule, `---\ndescription: Operon\nalwaysApply: true\n---\n${TRAMPOLINE_BLOCK}\n`);
+      const resCursor = disarmFile(cursorRule, { ownsFile: true });
+      expect(resCursor.status).toBe("removed");
+      expect(fs.existsSync(cursorRule)).toBe(false);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -380,5 +420,26 @@ describe("Convex Cloud Brain (convex-test)", () => {
     expect(sliced?.found).toBe(true);
     expect(sliced?.sectionText).toContain("## Versioning Rules");
     expect(sliced?.sectionText).not.toContain("## Error Payloads");
+
+    // 5. Persistent full-text and multi-field invariant search (`knowledge:searchInvariants`)
+    const byRuleFts = await t.query(api.knowledge.searchInvariants, {
+      projectId: created.projectId,
+      query: "endpoints return status data",
+    });
+    expect(byRuleFts).toHaveLength(1);
+    expect(byRuleFts[0].code).toBe("API-01");
+
+    const byReasonToken = await t.query(api.knowledge.searchInvariants, {
+      projectId: created.projectId,
+      query: "frontend envelope wrapper",
+    });
+    expect(byReasonToken).toHaveLength(1);
+    expect(byReasonToken[0].code).toBe("API-01");
+
+    const emptySearch = await t.query(api.knowledge.searchInvariants, {
+      projectId: created.projectId,
+      query: "   ",
+    });
+    expect(emptySearch).toEqual([]);
   });
 });

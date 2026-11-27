@@ -53,7 +53,11 @@ export default defineSchema({
   })
     .index("by_project", ["projectId"])
     .index("by_project_and_kind_name", ["projectId", "kind", "name"])
-    .index("by_project_and_path", ["projectId", "path"]),
+    .index("by_project_and_path", ["projectId", "path"])
+    .searchIndex("search_content", {
+      searchField: "content",
+      filterFields: ["projectId", "kind"],
+    }),
 
   // 4. Spatially-Scoped Atomic Invariants
   invariants: defineTable({
@@ -67,7 +71,11 @@ export default defineSchema({
     timestamp: v.number(),
   })
     .index("by_project", ["projectId"])
-    .index("by_project_and_code", ["projectId", "code"]),
+    .index("by_project_and_code", ["projectId", "code"])
+    .searchIndex("search_rule", {
+      searchField: "rule",
+      filterFields: ["projectId"],
+    }),
 
   // 5. Continuous Sessions & In-Flight Seams (Write-Ahead Logging + Collision Detection)
   sessions: defineTable({

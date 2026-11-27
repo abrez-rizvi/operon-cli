@@ -33,19 +33,26 @@ export const isGitRepo = (cwd: string): boolean => repoRoot(cwd) !== null;
 
 /**
  * Resolves the workspace root:
- * 1. Nearest ancestor with `.operon/config.json`
+ * 1. Nearest ancestor with `.operon/config.json` (stopping at git root or user home)
  * 2. Git top-level root (`git rev-parse --show-toplevel`)
  * 3. `path.resolve(cwd)` (works in any folder without `.git`)
  */
 export function workspaceRoot(cwd = process.cwd()): string {
+  const gitRoot = repoRoot(cwd);
+  const homeDir = path.resolve(process.env.OPERON_USER_HOME ?? os.homedir());
   let dir = path.resolve(cwd);
   while (true) {
-    if (fs.existsSync(path.join(dir, ".operon", "config.json"))) return dir;
+    if (dir !== homeDir && fs.existsSync(path.join(dir, ".operon", "config.json"))) {
+      return dir;
+    }
+    if (gitRoot && dir.toLowerCase() === gitRoot.toLowerCase()) {
+      return gitRoot;
+    }
     const parent = path.dirname(dir);
-    if (parent === dir) break;
+    if (parent === dir || parent.toLowerCase() === homeDir.toLowerCase()) break;
     dir = parent;
   }
-  return repoRoot(cwd) ?? path.resolve(cwd);
+  return gitRoot ?? path.resolve(cwd);
 }
 
 export const remoteUrl = (root: string) => tryGit(["config", "--get", "remote.origin.url"], root) || null;
@@ -117,6 +124,23 @@ export function addLocalExcludes(root: string, patterns: string[]): void {
       fs.appendFileSync(gitignore, `${prefix}.operon/\n`);
     }
   }
+}
+
+/** Removes matching exclusion lines from .git/info/exclude (e.g. when disarming harnesses). */
+export function removeLocalExcludes(root: string, patterns: string[]): void {
+  const rel = tryGit(["rev-parse", "--git-path", "info/exclude"], root);
+  if (!rel) return;
+  const file = path.resolve(root, rel);
+  if (!fs.existsSync(file)) return;
+  const current = fs.readFileSync(file, "utf8");
+  const patternSet = new Set(patterns.map((p) => p.trim()));
+  const remaining = current
+    .split(/\r?\n/)
+    .filter((line) => !patternSet.has(line.trim()))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  fs.writeFileSync(file, remaining ? remaining + "\n" : "");
 }
 
 export interface FileStat {

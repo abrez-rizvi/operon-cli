@@ -1,5 +1,4 @@
 import pc from "picocolors";
-import { mutateWithOutbox } from "../core/convex-client.js";
 import { listEntities } from "../core/entities.js";
 import { author, changedFiles, currentBranch, EMPTY_TREE, headSha } from "../core/git.js";
 import {
@@ -20,10 +19,10 @@ import {
   matchInvariants,
   timeAgo,
 } from "../core/matching.js";
-import { recallInvariantsFromMeko } from "../core/meko-client.js";
 import { activeSession, ensureSession } from "../core/sessions.js";
-import { pullLatest, pushSeam, readRemoteSessions, remoteSessionNote } from "../core/sync.js";
+import { pullLatest, pushSeam, readRemoteSessions, remoteSessionNote, searchInvariantsInConvex } from "../core/sync.js";
 import { parseHeadings } from "../tools/heading-parser.js";
+import type { Invariant } from "../types/okf.js";
 
 const MAX_INVARIANTS = 10;
 
@@ -46,6 +45,7 @@ export interface RefreshBootOptions {
   offlineNote?: boolean;
   teammateOverride?: string | null;
   resumed?: boolean;
+  recalledInvariants?: Invariant[];
 }
 
 /** Generates and writes `.operon/BOOT.md` from current local state + cached remote sessions/invariants. */
@@ -68,6 +68,13 @@ export function refreshBootFile(project: Project, promptOverride?: string, opts:
 
   const allInvariants = readInvariants(dir);
   const matches = matchInvariants(allInvariants, changed, prompt);
+  const matchedCodes = new Set(matches.map((m) => m.inv.code.toUpperCase()));
+  for (const recalled of opts.recalledInvariants ?? []) {
+    if (!matchedCodes.has(recalled.code.toUpperCase())) {
+      matchedCodes.add(recalled.code.toUpperCase());
+      matches.push({ inv: recalled, reasons: ["convex search"] });
+    }
+  }
   const entities = listEntities(dir);
   const { workflow, matched } = classifyWorkflow(
     entities.filter((e) => e.kind === "workflow"),
@@ -207,23 +214,17 @@ export async function bootCommand(prompt: string, opts: BootOptions = {}): Promi
     /* ignore unreachable base */
   }
 
-  // Bidirectional Cache-Aside (L1 Convex -> L2 Meko/YugabyteDB Read-Through on L1 Miss)
+  // Persistent Cache-Aside: Local .operon/ cache (L1) -> Convex Full-Text Search (L2) on local miss or --semantic
   const currentInvs = readInvariants(dir);
   const l1Matches = matchInvariants(currentInvs, changed, prompt);
+  let recalledInvariants: Invariant[] = [];
   if (l1Matches.length === 0 || opts.semantic) {
-    const recalled = await recallInvariantsFromMeko(project, prompt, currentInvs, {
-      sessionId: session.sessionId,
-    });
-    if (recalled.length > 0) {
-      writeInvariants(dir, [...currentInvs, ...recalled]);
-      if (project.config.cloud) {
-        for (const inv of recalled) {
-          await mutateWithOutbox(project, "knowledge:addInvariant", {
-            projectId: project.config.cloud.projectId,
-            projectToken: project.config.cloud.projectToken,
-            ...inv,
-          });
-        }
+    recalledInvariants = await searchInvariantsInConvex(project, prompt);
+    if (recalledInvariants.length > 0) {
+      const existingCodes = new Set(currentInvs.map((i) => i.code.toUpperCase()));
+      const newOnes = recalledInvariants.filter((i) => !existingCodes.has(i.code.toUpperCase()));
+      if (newOnes.length > 0) {
+        writeInvariants(dir, [...currentInvs, ...newOnes]);
       }
     }
   }
@@ -243,6 +244,7 @@ export async function bootCommand(prompt: string, opts: BootOptions = {}): Promi
     offlineNote: pulled === "offline",
     teammateOverride: teammate,
     resumed,
+    recalledInvariants,
   });
 
   console.log(bootContent.trimEnd());

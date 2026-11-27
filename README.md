@@ -6,8 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![OKF v0.3 Compliant](https://img.shields.io/badge/OKF-v0.3-green.svg)](docs/okf-v0.3.md)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7+-blue.svg)](https://www.typescriptlang.org/)
-[![Convex Reactive Event Bus](https://img.shields.io/badge/Convex-Hot%20L1%20Cache-orange.svg)](https://convex.dev/)
-[![Meko / YugabyteDB](https://img.shields.io/badge/Meko%20%2F%20YugabyteDB-Semantic%20L2-blueviolet.svg)](https://mekodata.ai/)
+[![Convex Cloud Brain](https://img.shields.io/badge/Convex-Persistent%20Store%20%2B%20Event%20Bus-orange.svg)](https://convex.dev/)
 
 ---
 
@@ -53,7 +52,7 @@ Scan installed AI coding harnesses (Cursor, Claude Code, Codex, Windsurf), arm g
 ```bash
 operon setup
 ```
-*(Interactive options allow selecting Pure Local-First, Community Demo Cloud, or custom Convex and Meko / YugabyteDB endpoints).*
+*(Interactive options allow selecting Pure Local-First, Community Demo Cloud, or your own private Convex deployment URL).*
 
 ### 3. Initialize a Repository
 Equip modular skill packs and engineering playbooks inside any git repository:
@@ -93,27 +92,28 @@ Operon was architected specifically for high-velocity teams using heterogeneous 
                └───────────────┬────────────────────────▲───────────────┘
                                │                        │
                ┌───────────────▼───────────────┐        │
-               │      CONVEX (HOT L1 CACHE)    │        │
-               │  • Sub-25ms WebSocket bus     │        │
-               │  • In-flight file seams       │        │
-               │  • Invariant path matching    │        │
+               │    LOCAL .operon/ CACHE (L1)  │        │
+               │  • Sub-ms spatial glob match  │        │
+               │  • Session WAL & outbox.jsonl │        │
+               │  • BOOT.md active flight plan │        │
                └───────────────┬───────────────┘        │
-             Async Write-Behind│                        │ L1 Cache Miss /
-             on `remember`     │                        │ Read-Through on `boot`
+              Write-Through /  │                        │ Cache Miss /
+              Outbox Flush     │                        │ Full-Text Recall on `boot`
                                ▼                        │
                ┌────────────────────────────────────────┴───────────────┐
-               │          MEKO / YUGABYTEDB (SEMANTIC L2 STORE)         │
-               │  • Durable multi-project memory (FastMCP JSON-RPC 2.0) │
-               │  • Hybrid semantic vector RAG (YugabyteDB pgvector)    │
+               │      CONVEX CLOUD BRAIN (PERSISTENT STORE & BUS, L2)   │
+               │  • Sub-25ms reactive WebSocket event bus (`watch`)     │
+               │  • Persistent ACID tables (invariants, entities, seams)│
+               │  • Native full-text search indexes (`search_rule`)     │
                └────────────────────────────────────────────────────────┘
 ```
 
-### 1. Bidirectional Cache-Aside Architecture (Convex L1 + Meko/YugabyteDB L2)
-- **Convex (Hot Reactive L1):** Functions as a sub-25ms in-memory reactive event bus. Subscribes over WebSockets (`operon watch`) to broadcast active teammate checkpoints and in-flight file seams. Fast local glob lookups provide sub-millisecond path matching.
-- **Meko / YugabyteDB (Durable Semantic L2):** Handles long-term enterprise memory across sessions and sibling projects backed by YugabyteDB `pgvector`.
-  - **Write-Behind on `remember`:** Invariants write immediately to Convex L1 for instant teammate broadcast, then persist asynchronously to Meko via FastMCP JSON-RPC 2.0 (`memory_add`).
-  - **Read-Through on `boot`:** On an L1 cache miss, Operon queries Meko's `memory_search`, retrieves historical gotchas from past sessions or other repositories, and promotes them into Convex L1.
-  - **Zero-Risk Fallback:** All remote semantic queries are protected by strict timeouts and degrade cleanly to Convex L1 if Meko hits rate limits or quota boundaries.
+### 1. Two-Tier Persistent + Cache Architecture (Local L1 Cache + Convex L2 Cloud Brain)
+- **Local `.operon/` Cache (Hot L1):** Stores hydrated OKF playbooks, `invariants.yaml`, session Write-Ahead Logs (`MEMORY.md`), and an offline FIFO mutation queue (`outbox.jsonl`). Sub-millisecond spatial glob and regex trigger evaluation runs locally with zero network dependency.
+- **Convex Cloud Brain (Persistent Store & Reactive Event Bus, L2):** Serves as both the real-time multi-agent synchronization bus and the durable ACID backing store.
+  - **Write-Through with Offline Outbox (`remember` / `checkpoint`):** New invariants and checkpoints write immediately to `.operon/` (L1) and sync to Convex (L2), broadcasting over WebSockets (`operon watch`) in under 25ms. If offline, mutations queue in `.operon/outbox.jsonl` and flush automatically on the next connected command.
+  - **Persistent Full-Text Search Recall (`boot`):** On a local L1 trigger miss (or when `--semantic` is passed), `operon boot` queries Convex's native full-text search indexes (`search_rule` and `search_content`) and multi-field token matcher (`knowledge:searchInvariants`), recalling matching project contracts and caching them locally.
+  - **Zero-Risk Offline Resilience:** All cloud reads and writes are bounded by strict timeouts and degrade cleanly to the local `.operon/` cache when offline.
 
 ### 2. Progressive Disclosure (<40 Tokens) vs. Prompt Bloat
 Traditional agent harnesses inject massive 2,000-line rule files that waste thousands of tokens on every prompt and induce instruction drift. Operon injects a tiny trampoline (<40 tokens) that instructs the agent to read `.operon/BOOT.md` for active constraints and slice skill sections on demand via `operon fetch <skill>:<heading>`. Tokens are consumed only for the exact section of the playbook needed for the task.
@@ -130,7 +130,7 @@ Instead of relying on LLM self-evaluation, Operon executes deterministic host ga
 ### 5. Two-Division Credential Isolation (Local-First + BYOC)
 Operon follows strict privacy separation:
 - **Pure Local Mode by Default:** Operon works 100% offline via local git and `.operon/` files. No cloud accounts or credit cards required.
-- **Bring-Your-Own-Cloud (BYOC):** Users can run `npx convex dev` to self-host their own backend or supply their own Meko token via `operon setup`. Personal tokens and datapacks are never bundled, committed, or exposed.
+- **Bring-Your-Own-Cloud (BYOC):** Users can run `npx convex dev` to self-host their own backend and configure their private Convex deployment URL via `operon setup`. Personal tokens and workspaces are never bundled, committed, or exposed.
 
 ---
 
@@ -148,16 +148,17 @@ sequenceDiagram
     actor Dev as Developer (Cursor / Claude Code)
     participant Agent as AI Coding Agent
     participant CLI as Operon CLI
-    participant Convex as Convex (Hot L1)
-    participant Meko as Meko / YugabyteDB (L2)
+    participant Cache as Local .operon/ Cache (L1)
+    participant Convex as Convex Cloud Brain (L2)
 
     Dev->>Agent: "operon fix auth token refresh"
     Agent->>CLI: operon boot "fix auth token refresh"
-    CLI->>Convex: Match active invariants for src/auth/**
-    alt L1 Cache Miss / Semantic Query
-        CLI->>Meko: memory_search (pgvector semantic search)
-        Meko-->>CLI: Recalled memory hit
-        CLI->>Convex: Promote into L1 Invariants
+    CLI->>Convex: Pull latest snapshot & active teammate seams
+    CLI->>Cache: Match active invariants for src/auth/**
+    alt Local Trigger Miss / --semantic Query
+        CLI->>Convex: knowledge:searchInvariants (Full-Text Search)
+        Convex-->>CLI: Matched persistent invariants
+        CLI->>Cache: Cache recalled invariants in invariants.yaml
     end
     CLI-->>Agent: Output: Active gotchas + Bug Fix workflow sequence
     Agent->>CLI: operon fetch systematic-debugging:reproduce
@@ -166,8 +167,8 @@ sequenceDiagram
     Agent->>CLI: operon verify
     CLI-->>Agent: Exit 0 (PASS: LOC within ceiling, 0 manifest bloat, clean debug)
     Agent->>CLI: operon remember "[auth] Token expiry must be in seconds"
-    CLI->>Convex: Real-time broadcast (<25ms WebSocket)
-    CLI--)Meko: Async write-behind (memory_add)
+    CLI->>Cache: Append to MEMORY.md & invariants.yaml
+    CLI->>Convex: Durable ACID write + real-time broadcast (<25ms WebSocket)
     Agent-->>Dev: "Auth token refresh fixed and verified."
 ```
 
@@ -180,6 +181,7 @@ sequenceDiagram
 | Command | Description |
 | :--- | :--- |
 | `operon setup` | Scan installed AI harnesses, arm global trampolines, seed pack library (`~/.operon/packs/`). |
+| `operon disarm [file]` | Remove Operon trampoline instructions from agent files (`AGENTS.md`, `CLAUDE.md`, Cursor rules, etc.). |
 | `operon init [name]` | Initialize project configuration, choose skill packs via interactive multi-select UI. |
 | `operon share` | Sync project to Convex and generate a team invite code / magic link. |
 | `operon join <codeOrUrl>` | Hydrate project folders from Convex to disk and arm local harnesses in <2s. |
@@ -194,12 +196,12 @@ sequenceDiagram
 
 | Command | Exit Code | Description |
 | :--- | :--- | :--- |
-| `operon boot "<prompt>" [--semantic]` | `0` | Classifies workflow intent, checks session WAL, injects spatially-scoped invariants from Convex L1 and Meko/YugabyteDB L2. |
+| `operon boot "<prompt>" [--semantic]` | `0` | Classifies workflow intent, checks session WAL, injects spatially-scoped invariants from local `.operon/` cache and Convex persistent full-text search. |
 | `operon fetch <target>` | `0` / `2` | Slices target AST heading (`operon fetch tdd:red-phase`) to minimize prompt tokens. |
 | `operon checkpoint "<msg>"` | `0` | Records micro-delta to session Write-Ahead Log on disk and Convex event bus. |
 | `operon verify` | `0` / `1` | Deterministic quality gate: LOC ceiling, manifest lock, debug markers. |
 | `operon clean [--purge]` | `0` / `1` | Scans for temporary debug statements (`console.log`, `print`, `debugger;`) and purges safe lines. |
-| `operon remember "<gotcha>"` | `0` | Captures discovered project gotcha (`[scope] rule`) into Convex L1 + async write-behind to Meko L2. |
+| `operon remember "<gotcha>"` | `0` | Captures discovered project gotcha (`[scope] rule`) into `.operon/` and syncs to Convex. |
 | `operon forget <code>` | `0` | Removes an obsolete invariant by code (e.g. `AUTH-01`). |
 | `operon validate [path]` | `0` / `1` | OKF v0.3 schema conformance tester. |
 
@@ -209,21 +211,21 @@ sequenceDiagram
 
 ```text
 operon/
-├── convex/                          # Convex Reactive Cloud Brain (Hot L1 Cache)
-│   ├── schema.ts                    # Real-time event bus, entities, invariants, sessions, telemetry
+├── convex/                          # Convex Cloud Brain (Persistent Store, Search & Event Bus)
+│   ├── schema.ts                    # Real-time event bus, entities, invariants, full-text indexes
 │   ├── events.ts                    # Append-only reactive event feed (checkpoints, seams, gotchas)
 │   ├── entities.ts                  # Structured OKF playbooks & skills registry
 │   ├── auth.ts                      # Project token validation
 │   ├── projects.ts                  # Workspace init, invite codes, snapshots, file sync
-│   ├── knowledge.ts                 # Real-time invariant sync & spatial queries
+│   ├── knowledge.ts                 # Persistent invariant storage, full-text search & spatial queries
 │   ├── sessions.ts                  # Continuous session WAL checkpoints
 │   └── telemetry.ts                 # Flight recorder audit logs
 │
 ├── src/                             # Local CLI Engine (TypeScript)
 │   ├── cli.ts                       # CLI router (cac)
 │   ├── commands/                    # Human & Agent command implementations
-│   ├── core/                        # Local store, git, Convex client, Meko L2 client, harness scanner
-│   │   ├── meko-client.ts           # FastMCP JSON-RPC 2.0 client for Meko / YugabyteDB
+│   ├── core/                        # Local store, git, Convex client, sync engine, harness scanner
+│   │   ├── convex-client.ts         # Convex HTTP client & offline FIFO mutation outbox
 │   │   ├── matching.ts              # Spatial invariant & skill classifier
 │   │   └── ...
 │   ├── tools/                       # Deterministic hygiene & OKF validation tools

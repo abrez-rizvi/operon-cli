@@ -56,7 +56,7 @@ In interactive terminals, `operon` prints the following 5-line cyan ASCII banner
   / __ \/ __ \/ ____/ __ \/ __ \/ | / /
  / / / / /_/ / __/ / /_/ / / / /  |/ / 
 / /_/ / ____/ /___/ _, _/ /_/ / /|  /  
-\____/_/   /_____/_/ |_|\____/_/ |_/   v0.2
+\____/_/   /_____/_/ |_|\____/_/ |_/   v0.3
 ```
 
 ---
@@ -107,9 +107,8 @@ Last checkpoint: Removed temporary test invariant CACHE-01; clean slate confirme
 ## Teammate Activity
 Latest on `main` by agent (0s ago, in-flight): Updated TRAMPOLINE_BLOCK and BOOT.md with explicit peer bridge identity, filtered harness files and wal-* self-sessions in seam collision detection, and made .operon/MEMORY.md strictly outbound-only (no incoming merge).
 
-## ⚠ Active Invariants (4)
+## ⚠ Active Invariants (3)
 - [SEAM-02] Seam detection gives false positives: Operon's own harness files (.cursor/rules/operon.mdc, .gitignore, CLAUDE.md) count as touched paths, and MEMORY.md checkpoints with no session attr become a synthetic `wal-<branch>` session, so this machine's own past checkpoints show up as a teammate collision and as duplicate Teammate Activity lines. (src/core/matching.ts, src/commands/watch.ts, convex/memory.ts · agent · 0s ago · touches convex/memory.ts, prompt match)
-- [MEKO-01] Meko/YugabyteDB L2 uses FastMCP JSON-RPC 2.0 tools/call at https://mcp.mekodata.ai/mcp with RFC 4122 UUID conversation_id and 12s timeout fallback (**/meko/**, **/meko* · mohammad.abrez@bcah.christuniversity.in · 43m ago · touches mekocalls.txt)
 - [SEAM-01] Distinguish active teammate sessions by `sessionId !== localSessionId` (not just `author !== me`) so testing across two laptops with the same git user.email still detects in-flight seam collisions. (src/core/matching.ts, src/commands/watch.ts · agent · 4h ago · touches src/commands/watch.ts, prompt match)
 - [SYNC-01] Local edits to .operon/policy.yaml or skills must be synced to Convex (or watched in real-time) before `operon boot`, otherwise `pullLatest` overwrites them with the last cloud snapshot. (.operon/policy.yaml, src/core/sync.ts · agent · 4h ago · touches src/core/sync.ts, prompt match)
 
@@ -215,7 +214,7 @@ operon remember "[test] Temporary rule for terminal output transcript" --reason 
 
 **Raw Output:**
 ```text
-✔ Recorded invariant [TEST-01] (**/test/**, **/test*) — synced to Convex + Meko/YugabyteDB (L2)
+✔ Recorded invariant [TEST-01] (**/test/**, **/test*) — synced to Convex
   Temporary rule for terminal output transcript
 ```
 
@@ -238,4 +237,18 @@ operon join https://operon.dev/join/operon-rymhx2pwa2
   - tools/ (policy)
 ✔ Auto-arming detected AI editors: Cursor.
 ✔ Ready! Files are in .operon/ — run operon watch for live sync or prompt your agent with "operon <task>".
+```
+
+---
+
+### 2.8 `operon disarm [file]`
+
+**Command:**
+```powershell
+operon disarm AGENTS.md
+```
+
+**Raw Output:**
+```text
+✔ Disarmed AGENTS.md (removed Operon instructions, preserved other content).
 ```

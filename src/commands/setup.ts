@@ -17,7 +17,7 @@ export async function setupCommand(opts: SetupOptions = {}): Promise<number> {
 
   if (opts.reset) {
     clearUserGlobalConfig();
-    console.log(`${pc.green("✔")} Cleared user-global cloud credentials (~/.operon/config.json).`);
+    console.log(`${pc.green("✔")} Cleared user-global cloud credentials (~/.operon/user-config.json).`);
   }
 
   console.log("Scanning for installed AI coding harnesses (global configs)…");
@@ -53,7 +53,7 @@ export async function setupCommand(opts: SetupOptions = {}): Promise<number> {
     }
 
     const cloudChoice = await select({
-      message: "Cloud Endpoints & Knowledge Tier (Convex & Meko / YugabyteDB):",
+      message: "Cloud Backend & Persistent Team Brain (Convex):",
       options: [
         {
           value: "local",
@@ -67,8 +67,8 @@ export async function setupCommand(opts: SetupOptions = {}): Promise<number> {
         },
         {
           value: "custom",
-          label: "(3) Connect your own Convex & Meko / YugabyteDB endpoints",
-          hint: "Configure your own private Convex URL and/or Meko API token",
+          label: "(3) Connect your own Convex deployment URL",
+          hint: "Configure your own private Convex cloud endpoint",
         },
       ],
     });
@@ -84,24 +84,12 @@ export async function setupCommand(opts: SetupOptions = {}): Promise<number> {
           placeholder: "https://my-team.convex.cloud",
           initialValue: existing.convexUrl ?? "",
         });
-        const mekoTokenInput = await text({
-          message: "Meko API Token (mko_tkn_... · leave empty to skip semantic memory):",
-          placeholder: "mko_tkn_...",
-          initialValue: existing.mekoToken ?? "",
-        });
-        const mekoDatapackInput = await text({
-          message: "Meko Datapack ID (optional UUID · leave empty for default):",
-          placeholder: "e.g. 3e4a6d90-6b3c-...",
-          initialValue: existing.mekoDatapackId ?? "",
-        });
 
         const newCfg: UserGlobalConfig = {};
         if (!isCancel(convexUrlInput) && convexUrlInput.trim()) newCfg.convexUrl = convexUrlInput.trim();
-        if (!isCancel(mekoTokenInput) && mekoTokenInput.trim()) newCfg.mekoToken = mekoTokenInput.trim();
-        if (!isCancel(mekoDatapackInput) && mekoDatapackInput.trim()) newCfg.mekoDatapackId = mekoDatapackInput.trim();
 
         writeUserGlobalConfig(newCfg);
-        console.log(`${pc.green("✔")} Saved cloud endpoints in ~/.operon/config.json`);
+        console.log(`${pc.green("✔")} Saved cloud endpoint in ~/.operon/user-config.json`);
       } else if (cloudChoice === "local") {
         clearUserGlobalConfig();
         console.log(`${pc.green("✔")} Set to Pure Local-First. Zero cloud endpoints configured.`);

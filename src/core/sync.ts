@@ -16,6 +16,7 @@ import {
 } from "./local-store.js";
 import { timeAgo, type RemoteSession } from "./matching.js";
 import { formatCheckpointBlock, formatInvariantBlock, parseMemoryFile } from "./memory-parser.js";
+import type { Invariant } from "../types/okf.js";
 
 const remoteSessionsPath = (dir: string) => path.join(dir, "sessions", "remote.json");
 
@@ -195,6 +196,32 @@ export async function logTelemetry(
     author: author(project.root),
     timestamp: Date.now(),
   });
+}
+
+/**
+ * Queries Convex (`knowledge:searchInvariants`) for persistent full-text & multi-field invariant recall
+ * when local `.operon/` spatial/regex matching misses or `--semantic` is passed on `operon boot`.
+ */
+export async function searchInvariantsInConvex(
+  project: Project,
+  query: string,
+  timeoutMs = 6000,
+): Promise<Invariant[]> {
+  const url = resolveConvexUrl(project);
+  const cloud = project.config.cloud;
+  if (!url || !cloud || !query.trim()) return [];
+  try {
+    const client = createClient(url, timeoutMs);
+    const hits = await client.query(api.knowledge.searchInvariants, {
+      projectId: cloud.projectId as Id<"projects">,
+      query: query.trim(),
+      limit: 10,
+    });
+    if (!Array.isArray(hits)) return [];
+    return hits.filter((h): h is Invariant => Boolean(h?.code && h?.rule));
+  } catch {
+    return [];
+  }
 }
 
 /** Binds a local project to Convex and uploads all project files & invariants. */
